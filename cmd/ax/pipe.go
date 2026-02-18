@@ -35,6 +35,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/xcmcp/axuiautomation"
@@ -53,12 +54,12 @@ func (pc *pipeContext) close() {
 	}
 }
 
-// stagesAfter returns the valid next stages given what the current context type is.
+// stagesAfterContext returns the valid next stages given the current context type.
 func stagesAfterContext(pc *pipeContext) []string {
 	if pc == nil || pc.app == nil {
 		return []string{"app"}
 	}
-	base := []string{"window", "windows", "find", "focus", "tree", "json", "click-menu"}
+	base := []string{".", "window", "windows", "find", "focus", "tree", "json", "click-menu"}
 	if pc.element != nil {
 		base = append(base, "click", "type", "attr", "children", "list", "json")
 	}
@@ -70,7 +71,7 @@ func stagesAfterContext(pc *pipeContext) []string {
 
 // terminalStages are pipeline stages that produce output (rather than context).
 var terminalStages = map[string]bool{
-	"tree": true, "list": true, "json": true,
+	".": true, "tree": true, "list": true, "json": true,
 	"click": true, "type": true, "attr": true, "click-menu": true,
 }
 
@@ -85,6 +86,9 @@ func parseAndExecutePipeline(expr string) error {
 
 	pc := &pipeContext{}
 	defer pc.close()
+
+	// Spin the run loop once so AX IPC replies are delivered in this CLI process.
+	axuiautomation.SpinRunLoop(200 * time.Millisecond)
 
 	var lastCmd string
 	for _, stage := range stages {
@@ -224,10 +228,17 @@ func execStage(pc *pipeContext, parts []string) error {
 		if pc.app == nil {
 			return fmt.Errorf("window: no app in context")
 		}
+		wins := pc.app.WindowList()
 		if len(args) > 0 {
-			pc.element = pc.app.WindowByTitleContains(args[0])
-		} else {
-			pc.element = pc.app.MainWindow()
+			substr := strings.ToLower(args[0])
+			for _, w := range wins {
+				if strings.Contains(strings.ToLower(w.Title()), substr) {
+					pc.element = w
+					break
+				}
+			}
+		} else if len(wins) > 0 {
+			pc.element = wins[0]
 		}
 		pc.elements = nil
 		if pc.element == nil {
@@ -238,7 +249,7 @@ func execStage(pc *pipeContext, parts []string) error {
 		if pc.app == nil {
 			return fmt.Errorf("windows: no app in context")
 		}
-		pc.elements = pc.app.Windows().AllElements()
+		pc.elements = pc.app.WindowList()
 		pc.element = nil
 
 	case "focus":
@@ -384,6 +395,9 @@ func execStage(pc *pipeContext, parts []string) error {
 			}
 		}
 		printTree(root, 0, depth)
+
+	case ".":
+		printContext(pc)
 
 	case "list":
 		els := pc.elements
@@ -551,7 +565,7 @@ func completePipelineWords(args []string, toComplete string) ([]string, cobra.Sh
 			}
 		}
 
-	case "tree", "list", "json", "click", "focus", "children", "windows", "first":
+	case ".", "tree", "list", "json", "click", "focus", "children", "windows", "first":
 		// These stages take no args; suggest // to add the next stage.
 		if strings.HasPrefix("//", toComplete) {
 			return []string{"//"}, cobra.ShellCompDirectiveNoFileComp

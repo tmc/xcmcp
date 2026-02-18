@@ -28,7 +28,11 @@ func NewApplication(bundleID string) (*Application, error) {
 		return nil, ErrNotRunning
 	}
 
-	return NewApplicationFromPID(pid), nil
+	app := NewApplicationFromPID(pid)
+	if app != nil {
+		app.bundleID = bundleID
+	}
+	return app, nil
 }
 
 // NewApplicationFromPID creates a new Application from a process ID.
@@ -156,6 +160,22 @@ func (a *Application) Windows() *ElementQuery {
 		return newElementQuery(nil, a)
 	}
 	return newElementQuery(a.root, a).ByRole("AXWindow")
+}
+
+// WindowList returns all windows using the AXWindows attribute directly,
+// which is faster and more reliable than traversing AXChildren.
+func (a *Application) WindowList() []*Element {
+	if a.root == nil || a.root.ref == 0 {
+		return nil
+	}
+	refs := getAXAttributeElements(a.root.ref, "AXWindows")
+	els := make([]*Element, 0, len(refs))
+	for _, ref := range refs {
+		if ref != 0 {
+			els = append(els, newElement(ref, a))
+		}
+	}
+	return els
 }
 
 // MainWindow returns the application's main window (first window).
