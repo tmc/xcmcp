@@ -68,7 +68,15 @@ func stagesAfterContext(pc *pipeContext) []string {
 	return base
 }
 
+// terminalStages are pipeline stages that produce output (rather than context).
+var terminalStages = map[string]bool{
+	"tree": true, "list": true, "json": true,
+	"click": true, "type": true, "attr": true, "click-menu": true,
+}
+
 // parseAndExecutePipeline parses and runs the pipeline string.
+// If the last stage is navigational (not terminal), it prints a default
+// text representation of whatever the pipeline resolved to.
 func parseAndExecutePipeline(expr string) error {
 	stages := splitPipelineExec(expr)
 	if len(stages) == 0 {
@@ -78,16 +86,54 @@ func parseAndExecutePipeline(expr string) error {
 	pc := &pipeContext{}
 	defer pc.close()
 
+	var lastCmd string
 	for _, stage := range stages {
 		parts := tokenize(stage)
 		if len(parts) == 0 {
 			continue
 		}
+		lastCmd = parts[0]
 		if err := execStage(pc, parts); err != nil {
 			return fmt.Errorf("stage %q: %w", stage, err)
 		}
 	}
+
+	if !terminalStages[lastCmd] {
+		printContext(pc)
+	}
 	return nil
+}
+
+// printContext prints a human-readable summary of the current pipeline context.
+func printContext(pc *pipeContext) {
+	switch {
+	case len(pc.elements) > 0:
+		for i, e := range pc.elements {
+			printElement(i, e)
+		}
+	case pc.element != nil:
+		printElement(-1, pc.element)
+	case pc.app != nil:
+		fmt.Printf("app pid=%d bundle=%q\n", pc.app.PID(), pc.app.BundleID())
+	}
+}
+
+func printElement(idx int, e *axuiautomation.Element) {
+	role := e.Role()
+	title := e.Title()
+	val := e.Value()
+	var parts []string
+	if idx >= 0 {
+		parts = append(parts, fmt.Sprintf("[%d]", idx))
+	}
+	parts = append(parts, role)
+	if title != "" {
+		parts = append(parts, fmt.Sprintf("%q", title))
+	}
+	if val != "" && val != title {
+		parts = append(parts, fmt.Sprintf("= %q", val))
+	}
+	fmt.Println(strings.Join(parts, " "))
 }
 
 // splitPipelineExec splits on | and trims all stages (for execution).
