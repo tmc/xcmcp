@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
-	"github.com/tmc/appledocs/generated/applicationservices"
 	"github.com/tmc/appledocs/generated/corefoundation"
 )
 
@@ -33,7 +33,7 @@ func NewApplication(bundleID string) (*Application, error) {
 
 // NewApplicationFromPID creates a new Application from a process ID.
 func NewApplicationFromPID(pid int32) *Application {
-	ref := applicationservices.AXUIElementCreateApplication(pid)
+	ref := AXUIElementCreateApplication(pid)
 	if ref == 0 {
 		return nil
 	}
@@ -57,6 +57,9 @@ func findPIDByBundleID(bundleID string) (int32, error) {
 		return 0, ErrNotRunning
 	}
 	processName := parts[len(parts)-1]
+	if processName == "" {
+		return 0, ErrNotRunning
+	}
 
 	// Try case-insensitive pgrep first (more reliable)
 	cmd := exec.Command("pgrep", "-xi", processName)
@@ -176,28 +179,32 @@ func (a *Application) FocusedElement() *Element {
 		return nil
 	}
 
-	var value corefoundation.CFTypeRef
-	err := applicationservices.AXUIElementCopyAttributeValue(a.root.ref, axAttr("AXFocusedUIElement"), &value)
+	var value uintptr
+	err := AXUIElementCopyAttributeValue(a.root.ref, axAttr("AXFocusedUIElement"), &value)
 	if int(err) != axErrorSuccess || value == 0 {
 		return nil
 	}
 
-	return newElement(applicationservices.AXUIElementRef(value), a)
+	return newElement(AXUIElementRef(value), a)
 }
 
 // MenuBar returns the application's menu bar element.
+// It spins the CFRunLoop briefly on each attempt so that AX IPC replies are
+// delivered even in CLI processes that do not run a persistent event loop.
 func (a *Application) MenuBar() *Element {
 	if a.root == nil || a.root.ref == 0 {
 		return nil
 	}
 
-	var value corefoundation.CFTypeRef
-	err := applicationservices.AXUIElementCopyAttributeValue(a.root.ref, axAttr("AXMenuBar"), &value)
-	if int(err) != axErrorSuccess || value == 0 {
-		return nil
+	for range 8 {
+		var value uintptr
+		err := AXUIElementCopyAttributeValue(a.root.ref, axAttr("AXMenuBar"), &value)
+		if int(err) == axErrorSuccess && value != 0 {
+			return newElement(AXUIElementRef(value), a)
+		}
+		SpinRunLoop(100 * time.Millisecond)
 	}
-
-	return newElement(applicationservices.AXUIElementRef(value), a)
+	return nil
 }
 
 // Dialogs returns a query for all dialog windows.
@@ -246,32 +253,32 @@ func (a *Application) Checkboxes() *ElementQuery {
 
 // IsProcessTrusted checks if the current process has accessibility permissions.
 func IsProcessTrusted() bool {
-	return applicationservices.AXIsProcessTrusted()
+	return AXIsProcessTrusted()
 }
 
 // PromptForAccessibility triggers the system accessibility permission prompt.
 // Returns true if already trusted, false otherwise.
 func PromptForAccessibility() bool {
 	// Just use the simple version - the prompt happens automatically on macOS
-	return applicationservices.AXIsProcessTrustedWithOptions(nil)
+	return AXIsProcessTrustedWithOptions(0)
 }
 
 // CheckAccessibilityAccess performs a diagnostic check to see if accessibility API is working.
 // Returns the AX error code (0 = success, -25211 = API disabled/no permission).
 func CheckAccessibilityAccess(pid int32) (int, string) {
-	ref := applicationservices.AXUIElementCreateApplication(pid)
+	ref := AXUIElementCreateApplication(pid)
 	if ref == 0 {
 		return -1, "failed to create AXUIElement"
 	}
-	defer corefoundation.CFRelease(corefoundation.CFTypeRef(ref))
+	defer corefoundation.CFRelease(corefoundation.CFTypeRef(unsafe.Pointer(ref)))
 
 	// Try to get the AXChildren attribute - this will fail if we don't have permission
-	var value corefoundation.CFTypeRef
-	err := applicationservices.AXUIElementCopyAttributeValue(ref, axAttr("AXChildren"), &value)
+	var value uintptr
+	err := AXUIElementCopyAttributeValue(ref, axAttr("AXChildren"), &value)
 	// Convert to signed int32 to get proper error codes
 	code := int(int32(err))
 	if code == 0 && value != 0 {
-		corefoundation.CFRelease(value)
+		corefoundation.CFRelease(corefoundation.CFTypeRef(unsafe.Pointer(value)))
 		return 0, "OK"
 	}
 
@@ -289,6 +296,18 @@ func CheckAccessibilityAccess(pid int32) (int, string) {
 	default:
 		return code, fmt.Sprintf("error code %d", code)
 	}
+}
+
+// WaitForWindow waits up to timeout for a window whose title contains the given substring to appear.
+func (a *Application) WaitForWindow(title string, timeout time.Duration) (*Element, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if w := a.WindowByTitleContains(title); w != nil {
+			return w, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, ErrTimeout
 }
 
 // ClickMenuItem clicks a menu item by its path (e.g., ["File", "Export..."]).
