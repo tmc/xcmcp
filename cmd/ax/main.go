@@ -22,7 +22,7 @@ func main() {
 		WithAppName("ax").
 		WithPermissions(macgo.Accessibility).
 		WithAdHocSign()
-	cfg.BundleID = "com.tmc.ax"
+	cfg.BundleID = "dev.tmc.ax"
 
 	if err := macgo.Start(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "macgo start failed: %v\n", err)
