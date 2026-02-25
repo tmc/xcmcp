@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/xcmcp/axuiautomation"
+	"github.com/tmc/apple/x/axuiautomation"
 )
 
 // xcodeProxy manages a child mcpbridge process and client session.

@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tmc/macgo"
-	"github.com/tmc/xcmcp/axuiautomation"
+	"github.com/tmc/apple/x/axuiautomation"
 )
 
 func main() {

@@ -126,18 +126,10 @@ func registerUITools(s *mcp.Server) {
 		Name:        "ui_swipe",
 		Description: "Swipe on screen/app. Example: ui_swipe(direction='left')",
 	}, SafeTool("ui_swipe", func(ctx context.Context, req *mcp.CallToolRequest, args UISwipeInput) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		el := ui.Application()
-		switch args.Direction {
-		case "left":
-			el.SwipeLeft()
-		case "right":
-			el.SwipeRight()
-		case "up":
-			el.SwipeUp()
-		case "down":
-			el.SwipeDown()
-		}
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Swiped " + args.Direction}, nil
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: "ui_swipe is not implemented"}},
+		}, SimulatorActionOutput{}, nil
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

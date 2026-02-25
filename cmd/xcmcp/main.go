@@ -10,7 +10,7 @@ import (
 	"runtime"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/appledocs/generated/appkit"
+	"github.com/tmc/apple/appkit"
 	"github.com/tmc/macgo"
 	"github.com/tmc/xcmcp/resources"
 	"github.com/tmc/xcmcp/ui"
@@ -50,7 +50,7 @@ func main() {
 	enableCrash := flag.Bool("enable-crash-tools", false, "Enable crash reporting tools at startup")
 	enableFS := flag.Bool("enable-fs-tools", false, "Enable file system tools at startup")
 	enableDeps := flag.Bool("enable-dependency-tools", false, "Enable dependency management tools at startup")
-	enableResources := flag.Bool("enable-resources", false, "Enable resource management")
+	enableResources := flag.Bool("enable-resources", true, "Enable resource management")
 	enableASC := flag.Bool("enable-asc-tools", false, "Enable App Store Connect and altool tools at startup")
 	enableXcode := flag.Bool("enable-xcode-tools", true, "Enable Xcode tools via xcrun mcpbridge")
 	xcodeToolsPrefix := flag.String("xcode-tools-prefix", "", "Optional prefix for proxied Xcode tool names")

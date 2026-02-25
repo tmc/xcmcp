@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmc/xcmcp/axuiautomation"
+	"github.com/tmc/apple/x/axuiautomation"
 )
 
 // pipeContext holds the current state as the pipeline executes.

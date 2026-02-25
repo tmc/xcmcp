@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/appledocs/generated/appkit"
+	"github.com/tmc/apple/appkit"
+	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/macgo"
-	"github.com/tmc/xcmcp/axuiautomation"
 )
 
 func main() {

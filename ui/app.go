@@ -11,9 +11,10 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
-	"github.com/tmc/appledocs/generated/appkit"
-	"github.com/tmc/appledocs/generated/corefoundation"
-	"github.com/tmc/appledocs/generated/objc"
+	"github.com/tmc/apple/appkit"
+	"github.com/tmc/apple/corefoundation"
+	"github.com/tmc/apple/dispatch"
+	"github.com/tmc/apple/objc"
 )
 
 // Manual AX Bindings
@@ -204,10 +205,7 @@ func uiResetTCC() {
 }
 
 func uiBindButtonAction(btn appkit.NSButton, fn func()) {
-	item := appkit.NewNSMenuItem()
-	appkit.BindAction(item, func(_ objc.ID) { fn() })
-	btn.SetTarget(item.Target())
-	btn.SetAction(item.Action())
+	btn.SetActionHandler(fn)
 }
 
 func uiMakeButton(title string, frame corefoundation.CGRect, fn func()) appkit.NSButton {
@@ -232,7 +230,7 @@ func CheckTrust() {
 }
 
 func showWaitingForPermissionWindow() {
-	appkit.DispatchMainSafe(func() {
+	dispatch.MainQueue().Async(func() {
 		app := appkit.GetNSApplicationClass().SharedApplication()
 		app.SetActivationPolicy(appkit.NSApplicationActivationPolicyAccessory)
 
@@ -256,9 +254,9 @@ func showWaitingForPermissionWindow() {
 			false,
 		)
 		win.SetTitle(name + " — Accessibility Permission Required")
-		win.SetLevel(appkit.NSFloatingWindowLevel)
+		win.SetLevel(appkit.FloatingWindowLevel)
 
-		content := appkit.NSViewFrom(win.ContentView().GetID())
+		content := appkit.NSViewFromID(win.ContentView().GetID())
 
 		// Spinner — left side, aligned with text area.
 		spinner := appkit.NewProgressIndicatorWithFrame(corefoundation.CGRect{
@@ -309,7 +307,7 @@ func showWaitingForPermissionWindow() {
 
 		win.Center()
 		win.MakeKeyAndOrderFront(nil)
-		app.ActivateIgnoringOtherApps(true)
+		app.Activate()
 
 		// Poll on the main thread via time.AfterFunc + DispatchMainSafe so all
 		// ObjC calls (including uiIsTrustedFresh and UI mutations) stay on the
@@ -319,7 +317,7 @@ func showWaitingForPermissionWindow() {
 		poll = func() {
 			if !uiIsTrustedFresh() {
 				pollTimer = time.AfterFunc(500*time.Millisecond, func() {
-					appkit.DispatchMainSafe(poll)
+					dispatch.MainQueue().Async(poll)
 				})
 				return
 			}
@@ -334,12 +332,12 @@ func showWaitingForPermissionWindow() {
 			baseImg := appkit.NewImageWithSystemSymbolNameAccessibilityDescription(
 				"checkmark.circle.fill", "Permission granted",
 			)
-			sizeCfg := appkit.NewImageSymbolConfigurationWithPointSizeWeight(checkSz, appkit.NSFontWeightMedium)
+			sizeCfg := appkit.NewImageSymbolConfigurationWithPointSizeWeight(checkSz, appkit.NSFontWeights.Medium)
 			colorCfg := appkit.NewImageSymbolConfigurationWithHierarchicalColor(
 				appkit.GetNSColorClass().SystemGreen(),
 			)
 			cfg := sizeCfg.ConfigurationByApplyingConfiguration(colorCfg)
-			checkImg := appkit.NSImageFrom(baseImg.ImageWithSymbolConfiguration(cfg).GetID())
+			checkImg := appkit.NSImageFromID(baseImg.ImageWithSymbolConfiguration(cfg).GetID())
 			checkView := appkit.NewImageViewWithFrame(corefoundation.CGRect{
 				Origin: corefoundation.CGPoint{X: padding - 4, Y: (h - checkSz) / 2},
 				Size:   corefoundation.CGSize{Width: checkSz, Height: checkSz},
@@ -349,14 +347,14 @@ func showWaitingForPermissionWindow() {
 			titleLabel.SetStringValue("Accessibility permission granted.")
 
 			time.AfterFunc(1200*time.Millisecond, func() {
-				appkit.DispatchMainSafe(func() {
+				dispatch.MainQueue().Async(func() {
 					win.Close()
 				})
 			})
 		}
 
 		pollTimer = time.AfterFunc(500*time.Millisecond, func() {
-			appkit.DispatchMainSafe(poll)
+			dispatch.MainQueue().Async(poll)
 		})
 		_ = pollTimer
 	})
@@ -416,10 +414,6 @@ func (a *App) Exists() bool {
 	return a.pid != 0
 }
 
-func (a *App) PID() int32 {
-	return a.pid
-}
-
 func (a *App) Terminate() {
 	if a.pid != 0 {
 		// Skip
@@ -447,18 +441,9 @@ func (a *App) Tree() string {
 	return a.element.Tree()
 }
 
-func (a *App) SwipeLeft()  {}
-func (a *App) SwipeRight() {}
-func (a *App) SwipeUp()    {}
-func (a *App) SwipeDown()  {}
-
 // Element
 type Element struct {
 	ax uintptr // AXUIElementRef
-}
-
-func NewElement(ax uintptr) *Element {
-	return &Element{ax: ax}
 }
 
 func ElementByID(id string) *Element {
@@ -486,14 +471,8 @@ func (e *Element) PerformAction(action string) {
 }
 
 func (e *Element) DoubleTap()                                 {}
-func (e *Element) TwoFingerTap()                              {}
 func (e *Element) Press(d float64)                            {}
-func (e *Element) Pinch(s, v float64)                         {}
 func (e *Element) TypeText(t string)                          { e.SetValue(t) }
-func (e *Element) SwipeLeft()                                 {}
-func (e *Element) SwipeRight()                                {}
-func (e *Element) SwipeUp()                                   {}
-func (e *Element) SwipeDown()                                 {}
 func (e *Element) WaitForExistence(t float64) bool            { return e.Exists() }
 func (e *Element) AdjustToNormalizedSliderPosition(p float64) {}
 func (e *Element) DragTo(o *Element, d float64)               {}
@@ -680,8 +659,7 @@ type Attributes struct {
 
 type Coordinate struct{}
 
-func (e *Element) Coordinate(x, y float64) *Coordinate { return &Coordinate{} }
-func (c *Coordinate) Tap()                             {}
+func (c *Coordinate) Tap() {}
 
 func CoordinateAt(x, y float64) *Coordinate { return &Coordinate{} }
 func FocusedElement() *Element              { return nil }

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/tmc/appledocs/generated/appkit"
+	"github.com/tmc/apple/appkit"
+	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/macgo"
-	"github.com/tmc/xcmcp/axuiautomation"
 	"github.com/tmc/xcmcp/crash"
 	"github.com/tmc/xcmcp/devicectl"
 	"github.com/tmc/xcmcp/internal/purego/coresim"
@@ -841,26 +841,14 @@ var uiSwipeCmd = &cobra.Command{
 	Example: `  xc ui swipe left
   xc ui swipe up`,
 	Run: func(cmd *cobra.Command, args []string) {
-		dir := args[0]
-		// Determine target: default to App or specific element if flags added provided
-		// For now simple generic swipe on app/screen
-		// We use Application() which returns *App.
-		// *App has Swipe methods.
-		el := ui.Application()
-		switch dir {
-		case "left":
-			el.SwipeLeft()
-		case "right":
-			el.SwipeRight()
-		case "up":
-			el.SwipeUp()
-		case "down":
-			el.SwipeDown()
+		switch args[0] {
+		case "left", "right", "up", "down":
+			fmt.Fprintln(os.Stderr, "ui swipe is not implemented")
+			os.Exit(1)
 		default:
-			fmt.Printf("Unknown direction: %s\n", dir)
+			fmt.Printf("Unknown direction: %s\n", args[0])
 			os.Exit(1)
 		}
-		fmt.Printf("Swiped %s\n", dir)
 	},
 }
 
@@ -1890,7 +1878,6 @@ func init() {
 
 }
 
-
 // helpers shared by xcodeAddTargetCmd — thin wrappers over axuiautomation.
 
 func waitForSheet(app *axuiautomation.Application, timeout time.Duration) (*axuiautomation.Element, error) {
@@ -2025,36 +2012,6 @@ func typeIntoSearchField(sheet *axuiautomation.Element, text string) error {
 	}
 	time.Sleep(150 * time.Millisecond)
 	return tf.TypeText(text)
-}
-
-// selectPlatformFilter clicks the first platform row in the Xcode template
-// chooser sidebar so the template grid populates. Tries "iOS" first, then
-// falls back to the first available row.
-func selectPlatformFilter(sheet *axuiautomation.Element) {
-	// The sidebar is an AXOutline or AXTable on the left side.
-	for _, role := range []string{"AXOutline", "AXTable"} {
-		outline := sheet.Descendants().ByRole(role).First()
-		if outline == nil {
-			continue
-		}
-		// Try clicking "iOS" row first.
-		if row := outline.Descendants().ByRole("AXRow").ByTitle("iOS").First(); row != nil {
-			_ = row.Click()
-			row.Release()
-			outline.Release()
-			return
-		}
-		// Fall back to first non-empty row.
-		if row := outline.Descendants().ByRole("AXRow").Matching(func(e *axuiautomation.Element) bool {
-			return e.Title() != ""
-		}).First(); row != nil {
-			_ = row.Click()
-			row.Release()
-			outline.Release()
-			return
-		}
-		outline.Release()
-	}
 }
 
 // ensureXcodeProjectNodeSelected clicks the root .xcodeproj/.xcworkspace node

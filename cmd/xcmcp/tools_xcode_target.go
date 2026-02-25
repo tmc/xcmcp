@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/xcmcp/axuiautomation"
+	"github.com/tmc/apple/x/axuiautomation"
 )
 
 func registerXcodeTargetTools(s *mcp.Server) {

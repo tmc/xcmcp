@@ -38,7 +38,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/tmc/xcmcp/axuiautomation"
+	"github.com/tmc/apple/x/axuiautomation"
 )
 
 // pipeContext holds the current state as the pipeline executes.
