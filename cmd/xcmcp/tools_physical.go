@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/xcmcp/devicectl"
+	"github.com/tmc/xcmcp/internal/devicectl"
 )
 
 // Physical Device Tools

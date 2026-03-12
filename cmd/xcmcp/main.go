@@ -12,8 +12,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/macgo"
-	"github.com/tmc/xcmcp/resources"
-	"github.com/tmc/xcmcp/ui"
+	"github.com/tmc/xcmcp/internal/resources"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 func main() {

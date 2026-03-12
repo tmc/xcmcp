@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/xcmcp/altool"
-	"github.com/tmc/xcmcp/asc"
+	"github.com/tmc/xcmcp/internal/altool"
+	"github.com/tmc/xcmcp/internal/asc"
 )
 
 func registerASCTools(s *mcp.Server) {

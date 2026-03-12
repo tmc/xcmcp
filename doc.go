@@ -2,7 +2,7 @@
 //
 // xcmcp is a macOS-focused toolkit for Xcode, Simulator, Accessibility, and
 // AppleScript automation. The module is organized around command packages and
-// reusable libraries rather than a single top-level API.
+// internal implementation libraries rather than a single top-level API.
 //
 // # Commands
 //
@@ -14,18 +14,18 @@
 //   - cmd/ax and cmd/axmcp, tools for the macOS Accessibility API
 //   - cmd/ascript and cmd/ascriptmcp, tools for scriptable macOS applications
 //
-// # Core Packages
+// # Internal Packages
 //
-// The main reusable packages are:
+// The main implementation packages are:
 //
-//   - project, for discovering Xcode projects and schemes
-//   - xcodebuild, for build and test execution
-//   - simctl, for simulator management through xcrun simctl
-//   - devicectl, for physical device management
-//   - ui, for macOS Accessibility access and UI screenshots
-//   - screen, for screen capture helpers
-//   - crash, for crash report inspection
-//   - resources, for MCP resource registration
+//   - internal/project, for discovering Xcode projects and schemes
+//   - internal/xcodebuild, for build and test execution
+//   - internal/simctl, for simulator management through xcrun simctl
+//   - internal/devicectl, for physical device management
+//   - internal/ui, for macOS Accessibility access and UI screenshots
+//   - internal/screen, for screen capture helpers
+//   - internal/crash, for crash report inspection
+//   - internal/resources, for MCP resource registration
 //
 // # Environment
 //
@@ -34,6 +34,7 @@
 // Simulator and device features also depend on the corresponding runtime state,
 // such as a booted simulator or a connected device.
 //
-// This package exists to document the module as a whole. Most functionality
-// lives in the command packages and subpackages listed above.
+// This package exists to document the module as a whole. The supported entry
+// points are the commands under cmd/. Most library code lives in internal/
+// packages and is not intended as a public import surface.
 package xcmcp

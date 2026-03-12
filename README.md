@@ -161,22 +161,27 @@ ascript script /Applications/Finder.app activate
 - `xcmcp://apps/{bundle_id}/tree`
 - `xcmcp://apps/{bundle_id}/logs`
 
-## Packages
+## Internal Layout
 
-The module is organized around small packages with clear responsibilities:
+This module is command-first. The reusable helper packages live under `internal/`
+and are not intended as a public import surface.
 
-- `project`: discover Xcode projects and inspect schemes and build settings
-- `xcodebuild`: build and test wrappers
-- `simctl`: simulator management through `xcrun simctl`
-- `devicectl`: physical device management
-- `ui`: macOS Accessibility access and UI screenshots
-- `screen`: screen capture helpers
-- `crash`: crash report listing and reading
-- `resources`: MCP resource registration
+The main internal packages are:
+
+- `internal/project`: discover Xcode projects and inspect schemes and build settings
+- `internal/xcodebuild`: build and test wrappers
+- `internal/simctl`: simulator management through `xcrun simctl`
+- `internal/devicectl`: physical device management
+- `internal/ui`: macOS Accessibility access and UI screenshots
+- `internal/screen`: screen capture helpers
+- `internal/crash`: crash report listing and reading
+- `internal/resources`: MCP resource registration
 - `internal/sdef`: parser for AppleScript scripting definitions
+- `internal/altool` and `internal/asc`: App Store Connect helpers
 
 ## Notes
 
 - This repository targets macOS. Many packages use AppKit, Accessibility, or Apple developer tools directly.
 - UI automation depends on macOS Accessibility permission and on the target app being reachable through the Accessibility tree.
 - Some simulator and Xcode automation features rely on private or implementation-defined behavior and are best treated as developer tooling rather than a stable public protocol.
+- The supported entry points are the commands in `cmd/`. The internal packages may change without notice.

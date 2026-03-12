@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tmc/xcmcp/project"
-	"github.com/tmc/xcmcp/simctl"
-	"github.com/tmc/xcmcp/ui"
+	"github.com/tmc/xcmcp/internal/project"
+	"github.com/tmc/xcmcp/internal/simctl"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 // Context holds auto-detected project info
