@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/xcmcp/internal/purego/coresim"
@@ -21,26 +22,12 @@ type UITargetInput struct {
 	Platform string  `json:"platform,omitempty" description:"Target platform: 'mac' or 'ios' (default: auto)"`
 }
 
-type UISwipeInput struct {
-	Direction string `json:"direction" description:"Swipe direction (left, right, up, down)"`
-}
-
-type UITypeInput struct {
-	Text string `json:"text"`
-}
-
 func registerUITools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ui_tap",
-		Description: "Tap an element or coordinate. Examples: ui_tap(id='login'), ui_tap(udid='booted', x=100, y=200)",
+		Description: "Tap a macOS element by id or label, or tap iOS simulator coordinates. Examples: ui_tap(id='login'), ui_tap(udid='booted', x=100, y=200)",
 	}, SafeTool("ui_tap", func(ctx context.Context, req *mcp.CallToolRequest, args UITargetInput) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		// Determine Platform
 		isIOS := args.Platform == "ios" || args.UDID != ""
-		if !isIOS && args.Platform != "mac" {
-			// Auto-detect: if args.ID looks like a UUID or specific pattern?
-			// For now default to Mac unless UDID is present.
-			// However, if we are in a 'sim' context we might default to iOS.
-		}
 
 		if isIOS {
 			udid := args.UDID
@@ -61,75 +48,62 @@ func registerUITools(s *mcp.Server) {
 				return &mcp.CallToolResult{}, SimulatorActionOutput{Message: fmt.Sprintf("Tapped at %.1f, %.1f on %s", args.X, args.Y, udid)}, nil
 			}
 
-			// ID Tap (Requires Element Lookup)
-			// TODO: Implement Element Lookup via Traversing/Search
-			// For now, fail if not coordinate.
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "iOS Tap by ID not yet supported (requires deep tree traversal). Use coordinates (X, Y)."}}}, SimulatorActionOutput{}, nil
 		}
 
-		// Mac Implementation (Existing)
-		// Currently generic tap or ID or Label stub
-		if args.ID != "" {
-			// ... (rest of mac logic)
-			el := ui.ElementByID(args.ID)
-			if el == nil && args.Label != "" {
-				matches := ui.Application().Element().Query(ui.QueryParams{Label: args.Label})
-				if len(matches) > 0 {
-					el = matches[0]
-				}
-			}
-			// ...
-			if el == nil {
-				// Fallback: Try finding by label if ID passed as ID (legacy behavior)
-				matches := ui.Application().Element().Query(ui.QueryParams{Label: args.ID})
-				if len(matches) > 0 {
-					el = matches[0]
-				}
-			}
-
-			if el == nil {
-				// Fallback: Try finding by Title
-				matches := ui.Application().Element().Query(ui.QueryParams{Title: args.ID})
-				if len(matches) > 0 {
-					el = matches[0]
-				}
-			}
-
-			if el == nil {
-				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Element with ID/Label/Title '%s' not found", args.ID)}}}, SimulatorActionOutput{}, nil
-			}
-			el.Tap()
-		} else {
-			// Provide default fallback or error
-			app := ui.Application()
-			if !app.Exists() {
-				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Simulator app not found"}}}, SimulatorActionOutput{}, nil
-			}
-			el := app.Element()
-			if el == nil {
-				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Simulator element not accessible"}}}, SimulatorActionOutput{}, nil
-			}
-			el.Tap() // Taps app center/frame
+		if args.X != 0 || args.Y != 0 {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "macOS coordinate taps are not supported; use id or label"}},
+			}, SimulatorActionOutput{}, nil
 		}
+		if args.ID == "" && args.Label == "" {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "macOS taps require id or label"}},
+			}, SimulatorActionOutput{}, nil
+		}
+
+		app := ui.Application()
+		if !app.Exists() {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Simulator app not found"}}}, SimulatorActionOutput{}, nil
+		}
+		root := app.Element()
+		if root == nil {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Simulator element not accessible"}}}, SimulatorActionOutput{}, nil
+		}
+
+		var el *ui.Element
+		if args.ID != "" {
+			el = ui.ElementByID(args.ID)
+			if el == nil {
+				matches := root.Query(ui.QueryParams{Label: args.ID})
+				if len(matches) > 0 {
+					el = matches[0]
+				}
+			}
+			if el == nil {
+				matches := root.Query(ui.QueryParams{Title: args.ID})
+				if len(matches) > 0 {
+					el = matches[0]
+				}
+			}
+		}
+		if el == nil && args.Label != "" {
+			matches := root.Query(ui.QueryParams{Label: args.Label})
+			if len(matches) > 0 {
+				el = matches[0]
+			}
+		}
+		if el == nil {
+			target := args.ID
+			if target == "" {
+				target = args.Label
+			}
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Element '%s' not found", target)}}}, SimulatorActionOutput{}, nil
+		}
+		el.Tap()
 		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Tapped"}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_type",
-		Description: "Type text into focused element. Example: ui_type(text='hello')",
-	}, SafeTool("ui_type", func(ctx context.Context, req *mcp.CallToolRequest, args UITypeInput) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		ui.FocusedElement().TypeText(args.Text)
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Typed"}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_swipe",
-		Description: "Swipe on screen/app. Example: ui_swipe(direction='left')",
-	}, SafeTool("ui_swipe", func(ctx context.Context, req *mcp.CallToolRequest, args UISwipeInput) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: "ui_swipe is not implemented"}},
-		}, SimulatorActionOutput{}, nil
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -176,122 +150,29 @@ func registerUITools(s *mcp.Server) {
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_double_tap",
-		Description: "Double tap an element. Example: ui_double_tap(id='like_button')",
-	}, SafeTool("ui_double_tap", func(ctx context.Context, req *mcp.CallToolRequest, args UITargetInput) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		var el *ui.Element
-		if args.ID != "" {
-			el = ui.ElementByID(args.ID)
-		} else {
-			el = ui.Application().Element()
-		}
-
-		if el == nil {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element not found"}}}, SimulatorActionOutput{}, nil
-		}
-
-		el.DoubleTap()
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Double tapped"}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_long_press",
-		Description: "Long press an element. Example: ui_long_press(id='record', duration=2.0)",
-	}, SafeTool("ui_long_press", func(ctx context.Context, req *mcp.CallToolRequest, args struct {
-		ID       string  `json:"id,omitempty"`
-		Duration float64 `json:"duration"`
-	}) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		var el *ui.Element
-		if args.ID != "" {
-			el = ui.ElementByID(args.ID)
-		} else {
-			el = ui.Application().Element()
-		}
-
-		if el == nil {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element not found"}}}, SimulatorActionOutput{}, nil
-		}
-
-		duration := args.Duration
-		if duration == 0 {
-			duration = 1.0
-		}
-		el.Press(duration)
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Long pressed"}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ui_wait",
 		Description: "Wait for element to exist. Example: ui_wait(id='loaded_content', timeout=10.0)",
 	}, SafeTool("ui_wait", func(ctx context.Context, req *mcp.CallToolRequest, args struct {
 		ID      string  `json:"id,omitempty"`
 		Timeout float64 `json:"timeout"`
 	}) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		var el *ui.Element
-		if args.ID != "" {
-			el = ui.ElementByID(args.ID)
-		} else {
-			el = ui.Application().Element()
+		if args.ID == "" {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "id is required"}}}, SimulatorActionOutput{}, nil
 		}
-
-		if el == nil {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element context not found"}}}, SimulatorActionOutput{}, nil
-		}
-
 		timeout := args.Timeout
 		if timeout == 0 {
 			timeout = 5.0
 		}
-		exists := el.WaitForExistence(timeout)
-		if !exists {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element did not appear within timeout"}}}, SimulatorActionOutput{}, nil
+
+		deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
+		for time.Now().Before(deadline) {
+			el := ui.ElementByID(args.ID)
+			if el != nil && el.Exists() {
+				return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Element exists"}, nil
+			}
+			time.Sleep(200 * time.Millisecond)
 		}
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Element exists"}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_slider",
-		Description: "Set slider value (0.0 - 1.0). Example: ui_slider(id='volume', value=0.5)",
-	}, SafeTool("ui_slider", func(ctx context.Context, req *mcp.CallToolRequest, args struct {
-		ID    string  `json:"id,omitempty"`
-		Value float64 `json:"value"`
-	}) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		var el *ui.Element
-		if args.ID != "" {
-			el = ui.ElementByID(args.ID)
-		} else {
-			el = ui.Application().Element()
-		}
-
-		if el == nil {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element not found"}}}, SimulatorActionOutput{}, nil
-		}
-
-		el.AdjustToNormalizedSliderPosition(args.Value)
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: fmt.Sprintf("Set slider to %f", args.Value)}, nil
-	}))
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ui_drag",
-		Description: "Drag from one element to another. Example: ui_drag(from_id='a', to_id='b')",
-	}, SafeTool("ui_drag", func(ctx context.Context, req *mcp.CallToolRequest, args struct {
-		FromID   string  `json:"from_id,omitempty"`
-		ToID     string  `json:"to_id,omitempty"`
-		Duration float64 `json:"duration"`
-	}) (*mcp.CallToolResult, SimulatorActionOutput, error) {
-		fromEl := ui.ElementByID(args.FromID)
-		toEl := ui.ElementByID(args.ToID)
-
-		if fromEl == nil || toEl == nil {
-			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "One or both elements not found"}}}, SimulatorActionOutput{}, nil
-		}
-
-		duration := args.Duration
-		if duration == 0 {
-			duration = 1.0
-		}
-		fromEl.DragTo(toEl, duration)
-		return &mcp.CallToolResult{}, SimulatorActionOutput{Message: "Dragged"}, nil
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Element did not appear within timeout"}}}, SimulatorActionOutput{}, nil
 	}))
 
 	mcp.AddTool(s, &mcp.Tool{

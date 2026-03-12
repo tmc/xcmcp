@@ -124,8 +124,6 @@ func TestToolsE2ETapCrash(t *testing.T) {
 
 	// 2. List Apps
 	t.Log("Listing apps...")
-	// The SDK tools structure for response might differ, usually {content: [{type:text, text:...}], isError: false}
-	// Let's call the tool.
 	callTool := func(name string, args map[string]interface{}) (string, error) {
 		res, err := sendRequest("tools/call", map[string]interface{}{
 			"name":      name,
@@ -171,36 +169,6 @@ func TestToolsE2ETapCrash(t *testing.T) {
 	// Give it a moment to launch
 	time.Sleep(5 * time.Second)
 
-	// 4. Get State
-	t.Log("Checking state...")
-	// app_get_state returns map directly according to implementation?
-	// Wait, mcp.CallToolResult wrapping happens.
-	// implementation: return &mcp.CallToolResult{}, map[string]string{"state": state}, nil
-	// Wait, the SDK handler returns (result, extra, err). The SDK likely serializes 'result'.
-	// If the tool function returns custom structs as 2nd arg, does the SDK merge that into result?
-	// Looking at the SDK source would confirm, but usually the result is what matters.
-	// The implementation of app_get_state returns `map[string]string` as the second return value.
-	// Let's assume standard MCP Tool Call: result content should contain the info?
-	// Actually, checking `tools_app.go`:
-	// func(...) (*mcp.CallToolResult, map[string]string, error)
-	// The 2nd return value seems to be unused by standard SDK unless it uses it for something specific?
-	// Ah, wait. checking `xcmcp` source again.
-	// The SDK signature for AddTool handler is `func(ctx, request, input) (result, output, error)`.
-	// It seems the 'output' is marshalled into the result? No, standard MCP doesn't have "output" field.
-	// Likely the SDK implementation ignores the 2nd return value or uses it for side usage.
-	// But `app_get_state` creates an empty `CallToolResult` and puts the state in the 2nd arg map.
-	// If the SDK drops the 2nd arg, `app_get_state` returns empty result.
-	// Let's verify this behavioral assumption in the test.
-	// If `xcmcp` relies on 2nd arg, it might be buggy with standard SDK, OR the SDK automatically adds that map to the result content/data?
-	// I will inspect the raw response for state.
-
-	// Re-check tools_app.go:
-	/*
-	   return &mcp.CallToolResult{}, map[string]string{"state": state}, nil
-	*/
-	// If the SDK doesn't use the 2nd arg, this tool returns nothing.
-	// Let's define the test to just call it and log result.
-
 	// 5. UI Tree
 	t.Log("Getting UI Tree...")
 	if _, err := callTool("ui_tree", map[string]interface{}{"bundle_id": targetBundleID}); err != nil {
@@ -209,7 +177,6 @@ func TestToolsE2ETapCrash(t *testing.T) {
 
 	// 6. UI Tap Reproduction
 	t.Log("Getting Simulator UI Tree...")
-	// We use "com.apple.iphonesimulator" to target the simulator app itself (macOS side)
 	if _, err := callTool("ui_tree", map[string]interface{}{"bundle_id": "com.apple.iphonesimulator"}); err != nil {
 		t.Logf("ui_tree failed: %v", err)
 	} else {
@@ -217,9 +184,6 @@ func TestToolsE2ETapCrash(t *testing.T) {
 	}
 
 	t.Log("Attempting ui_tap on 'Edit'...")
-	// Note: ID-based tap relies on finding element with that ID or Label.
-	// If 'Edit' doesn't exist, it might fail gracefully or crash if the search logic is buggy.
-	// We expect a crash/EOF based on user report.
 	if _, err := callTool("ui_tap", map[string]interface{}{"id": "Edit"}); err != nil {
 		t.Fatalf("ui_tap failed/crashed: %v", err)
 	} else {

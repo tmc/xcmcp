@@ -1,5 +1,8 @@
 *.mcp
+.mcp.json
 *.png
+verification_script.jsonl
+simulator_tree.txt
 
 # binaries
 /ax
@@ -7,3 +10,4 @@
 /ascript
 /xc
 /xcmcp
+/cmd/xcmcp/xcmcp

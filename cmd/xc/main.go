@@ -33,14 +33,9 @@ func main() {
 		WithAdHocSign()
 		// WithUIMode(macgo.UIModeRegular).
 	cfg.BundleID = "dev.tmc.xc"
-	// cfg.ForceDirectExecution = true // Commented out to enable App Mode
-
-	f, _ := os.OpenFile("/tmp/xc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	fmt.Fprintf(f, "xc started pid=%d\n", os.Getpid())
 
 	if err := macgo.Start(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "macgo start failed: %v\n", err)
-		fmt.Fprintf(f, "macgo start failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -49,10 +44,8 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintf(f, "rootCmd failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(f, "xc exiting\n")
 }
 
 var rootCmd = &cobra.Command{
@@ -80,14 +73,9 @@ func init() {
 	rootCmd.AddCommand(screenCmd)
 	rootCmd.AddCommand(crashCmd)
 
-	uiCmd.AddCommand(uiSwipeCmd)
-	uiCmd.AddCommand(uiPressCmd)
 	uiCmd.AddCommand(uiTreeCmd)
 	uiCmd.AddCommand(uiTapCmd)
-	uiCmd.AddCommand(uiTypeCmd)
 	uiCmd.AddCommand(uiInspectCmd)
-	uiCmd.AddCommand(uiDoubleTapCmd)
-	uiCmd.AddCommand(uiLongPressCmd)
 	uiCmd.AddCommand(uiQueryCmd)
 	uiCmd.AddCommand(uiScreenshotCmd)
 	uiCmd.AddCommand(uiWaitCmd)
@@ -108,8 +96,6 @@ func init() {
 	uiTapCmd.Flags().Int("pid", 0, "Target Process ID (iOS only)")
 	uiInspectCmd.Flags().String("bundle-id", "", "Target application Bundle ID")
 	uiTreeCmd.Flags().String("bundle-id", "", "Target application Bundle ID")
-	uiDoubleTapCmd.Flags().String("id", "", "Accessibility Identifier")
-	uiLongPressCmd.Flags().String("id", "", "Accessibility Identifier")
 	uiScreenshotCmd.Flags().String("bundle-id", "", "Target application Bundle ID")
 	uiScreenshotCmd.Flags().String("id", "", "Accessibility Identifier")
 	uiScreenshotCmd.Flags().String("output", "screenshot.png", "Output filename")
@@ -560,11 +546,6 @@ var appInstallCmd = &cobra.Command{
 			}
 			fmt.Printf("Installed %s on device %s\n", path, udid)
 		} else {
-			// Fallback for macOS? Usually 'open' or specific installer.
-			// For now, we'll assume the user might want to install to a simulator if they didn't specify UDID but provided a .app
-			// But to be consistent with "no udid = macOS", we should probably warn or try to open.
-			// However, `xc app install` strongly implies device installation.
-			// Let's default to simctl implicit 'booted' if it looks like an iOS app, or just fail for now on macOS.
 			fmt.Println("Error: 'install' for macOS is not supported. Use --udid to install on Simulator.")
 			os.Exit(1)
 		}
@@ -752,17 +733,13 @@ var uiTapCmd = &cobra.Command{
 	Use:   "tap",
 	Short: "Tap an element or coordinate",
 	Example: `  xc ui tap --id "login_button"
-  xc ui tap --x 100 --y 200`,
+  xc ui tap --udid booted --x 100 --y 200`,
 	Run: func(cmd *cobra.Command, args []string) {
 		id, _ := cmd.Flags().GetString("id")
 		x, _ := cmd.Flags().GetFloat64("x")
 		y, _ := cmd.Flags().GetFloat64("y")
 		udid, _ := cmd.Flags().GetString("udid")
 		if udid == "" {
-			// Check global flag if not local (though local takes precedence if defined, here we just check if explicit)
-			// Actually getUDID helper?
-			// But wait, uiTapCmd inherits persistent flags?
-			// Let's check getUDID helper in main.go
 			udid = getUDID(cmd)
 		}
 
@@ -802,7 +779,10 @@ var uiTapCmd = &cobra.Command{
 			return
 		}
 
-		// Mac Fallback
+		if x != 0 || y != 0 {
+			fmt.Println("Error: coordinate taps require --udid")
+			os.Exit(1)
+		}
 		if id != "" {
 			el := ui.ElementByID(id)
 			if el == nil {
@@ -811,43 +791,9 @@ var uiTapCmd = &cobra.Command{
 			}
 			el.Tap()
 			fmt.Printf("Tapped element '%s'\n", id)
-		} else if x != 0 && y != 0 {
-			ui.CoordinateAt(x, y).Tap()
-			fmt.Printf("Tapped at %.1f, %.1f\n", x, y)
 		} else {
-			fmt.Println("Error: must specify --id or --x and --y")
+			fmt.Println("Error: must specify --id")
 			cmd.Usage()
-		}
-	},
-}
-
-// ...
-
-var uiTypeCmd = &cobra.Command{
-	Use:     "type [text]",
-	Short:   "Type text",
-	Args:    cobra.ExactArgs(1),
-	Example: `  xc ui type "Hello World"`,
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.FocusedElement().TypeText(args[0])
-		fmt.Printf("Typed '%s'\n", args[0])
-	},
-}
-
-var uiSwipeCmd = &cobra.Command{
-	Use:   "swipe [direction]",
-	Short: "Swipe in a direction (up, down, left, right)",
-	Args:  cobra.ExactArgs(1),
-	Example: `  xc ui swipe left
-  xc ui swipe up`,
-	Run: func(cmd *cobra.Command, args []string) {
-		switch args[0] {
-		case "left", "right", "up", "down":
-			fmt.Fprintln(os.Stderr, "ui swipe is not implemented")
-			os.Exit(1)
-		default:
-			fmt.Printf("Unknown direction: %s\n", args[0])
-			os.Exit(1)
 		}
 	},
 }
@@ -858,52 +804,26 @@ var uiTreeCmd = &cobra.Command{
 	Example: `  xc ui tree --bundle-id com.apple.finder
   xc ui tree (dumps Simulator)`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// ... (existing implementation)
-		f, _ := os.OpenFile("/tmp/xc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		fmt.Fprintf(f, "uiTreeCmd: start pid=%d\n", os.Getpid())
-
 		bid, _ := cmd.Flags().GetString("bundle-id")
 		app := ui.Application()
-		fmt.Fprintf(f, "uiTreeCmd: got application\n")
-
 		if bid != "" {
 			app = ui.ApplicationWithBundleID(bid)
 		}
-
-		fmt.Fprintf(f, "uiTreeCmd: checking exists\n")
-		exists := app.Exists()
-		fmt.Fprintf(f, "uiTreeCmd: exists=%v\n", exists)
-
-		if !exists {
+		if !app.Exists() {
 			target := bid
 			if target == "" {
 				target = "Simulator (Default)"
 			}
 			msg := fmt.Sprintf("Error: Application '%s' not found or not accessible.\nPlease check Accessibility Permissions for Terminal/xc.\n", target)
 			fmt.Println(msg)
-			fmt.Fprintf(f, "uiTreeCmd: %s", msg)
 			return
 		}
-
-		fmt.Fprintf(f, "uiTreeCmd: getting tree\n")
-		// Use VisualTree if available, or upgrade ui.App?
-		// ui.App.Tree() calls element.Tree().
-		// We added VisualTree to element.
-		// We should probably update ui.App to have VisualTree() or call element.VisualTree() directly.
-
-		// Let's verify if `app` has VisualTree.
-		// Wait, `app` is `*App`. In `xcmcp/ui/app.go`, `App` has `Tree() string` which calls `a.element.Tree()`.
-		// I should verify `xcmcp/ui/app.go` update first or cast here?
-		// Accessing `app.Element().VisualTree()` is safer if I didn't update App struct.
-
-		var tree string
-		if app.Element() != nil {
-			tree = app.Element().VisualTree()
+		el := app.Element()
+		if el == nil {
+			fmt.Println("Error: application element is not accessible.")
+			return
 		}
-
-		fmt.Fprintf(f, "uiTreeCmd: got tree len=%d\n", len(tree))
-		fmt.Println(tree)
-		fmt.Fprintf(f, "uiTreeCmd: done\n")
+		fmt.Println(el.VisualTree())
 	},
 }
 
@@ -913,18 +833,21 @@ var uiInspectCmd = &cobra.Command{
 	Example: `  xc ui inspect --bundle-id com.apple.finder
   xc ui inspect "accessibility_id"`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// ... (existing implementation)
 		var el *ui.Element
 		bid, _ := cmd.Flags().GetString("bundle-id")
 
 		if bid != "" {
-			app := ui.NewApp(bid) // *App
+			app := ui.NewApp(bid)
 			app.Activate()
-			el = app.Element() // *Element
+			el = app.Element()
 		} else if len(args) > 0 {
 			el = ui.ElementByID(args[0])
 		} else {
 			el = ui.Application().Element()
+		}
+		if el == nil {
+			fmt.Println("Element not found.")
+			os.Exit(1)
 		}
 
 		attrs := el.Attributes()
@@ -938,57 +861,6 @@ var uiInspectCmd = &cobra.Command{
 		fmt.Printf("  \"selected\": %v,\n", attrs.Selected)
 		fmt.Printf("  \"has_focus\": %v\n", attrs.HasFocus)
 		fmt.Printf("}\n")
-	},
-}
-
-// ...
-
-var uiDoubleTapCmd = &cobra.Command{
-	Use:     "double-tap",
-	Short:   "Double tap an element",
-	Example: `  xc ui double-tap --id "like_button"`,
-	Run: func(cmd *cobra.Command, args []string) {
-		id, _ := cmd.Flags().GetString("id")
-		var el *ui.Element
-		if id != "" {
-			el = ui.ElementByID(id)
-		} else {
-			el = ui.Application().Element()
-		}
-		el.DoubleTap()
-		fmt.Println("Double tapped")
-	},
-}
-
-var uiLongPressCmd = &cobra.Command{
-	Use:     "long-press [duration]",
-	Short:   "Long press an element",
-	Args:    cobra.MaximumNArgs(1),
-	Example: `  xc ui long-press --id "record_button" 2.5`,
-	Run: func(cmd *cobra.Command, args []string) {
-		id, _ := cmd.Flags().GetString("id")
-		duration := 1.0
-		if len(args) > 0 {
-			fmt.Sscanf(args[0], "%f", &duration)
-		}
-		var el *ui.Element
-		if id != "" {
-			el = ui.ElementByID(id)
-		} else {
-			el = ui.Application().Element()
-		}
-		el.Press(duration)
-		fmt.Printf("Long pressed (%v s)\n", duration)
-	},
-}
-
-var uiPressCmd = &cobra.Command{
-	Use:   "press [duration]",
-	Short: "Press (long press) for duration",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		// Parsing duration... simplified for example
-		fmt.Println("Press logic not fully exposed in CLI arg yet")
 	},
 }
 
@@ -1072,21 +944,15 @@ var uiScreenshotCmd = &cobra.Command{
 				os.Exit(1)
 			}
 			if id != "" {
-				// We don't have ElementByID on App directly, needs traverse?
-				// ui.ElementByID uses the system-wide query or focused app?
-				// For now, if bid is provided, we should probably search within that app.
-				// But our current ElementByID is global (system).
-				// Let's use generic global lookup if ID is provided, but we can filter by querying the app.
 				matches := app.Element().Query(ui.QueryParams{Identifier: id})
 				if len(matches) > 0 {
-					el = matches[0] // Simplified match
+					el = matches[0]
 				} else {
 					fmt.Printf("Element with id '%s' not found in app '%s'\n", id, bid)
 					os.Exit(1)
 				}
 			} else {
-				el = app.Element() // App window/frame
-				// Fallback: If app frame is empty, try first window
+				el = app.Element()
 				attr := el.Attributes()
 				if attr.Frame.Size.Width == 0 && attr.Frame.Size.Height == 0 {
 					windows := el.Windows()
@@ -1138,36 +1004,10 @@ var uiWaitCmd = &cobra.Command{
 			timeout = 5.0
 		}
 
-		// Use manual loop or call shared ui.Element if possible?
-		// Since 'xc' links 'ui' package directly, we can use it.
-		// Note: 'xc' CLI doesn't use MCP to talk to xcmcp server; it uses the libraries directly. A bit confusing but consistent with 'xc' design.
-
-		// Wait... 'xc' imports currently:
-		// "github.com/tmc/xcmcp/ui"
-
-		// The 'ui_wait' logic was added to 'tools_ui.go' which is part of 'xcmcp' (server) package main.
-		// But 'ui' package itself gained 'WaitForExistence' method in Step 1651 (Wait... Step 1651 showed it as stub: `func (e *Element) WaitForExistence(t float64) bool { return e.Exists() }`).
-
-		// I need to implement the REAL 'WaitForExistence' in 'ui/app.go' first!
-		// Because both 'xcmcp' (via tools_ui.go) and 'xc' (via direct call) rely on 'ui' package.
-
-		el := ui.ElementByID(id)
-		// Wait, ElementByID returns nil if not found immediately (as per my implementation in Step 1734).
-		// So checking ElementByID(id) once is not enough for waiting.
-		// We need to loop.
-
-		// But 'WaitForExistence' is a method on *Element.
-		// If we can't find the element object, we can't call WaitForExistence on it?
-		// Unless we call it on the Application element?
-		// Or unless `ElementByID` returns a proxy that doesn't resolve until interaction?
-		// Currently `ElementByID` attempts resolution immediately.
-
-		// So `ui_wait` needs to POLL `ElementByID`.
-
 		start := time.Now()
 		found := false
 		for time.Since(start).Seconds() < timeout {
-			el = ui.ElementByID(id)
+			el := ui.ElementByID(id)
 			if el != nil && el.Exists() {
 				found = true
 				break
@@ -1711,18 +1551,12 @@ var xcodeAddTargetCmd = &cobra.Command{
 			}
 		}
 
-		// Type the template name into the search field to filter the grid.
-		// After typing, the first result is auto-selected — just click Next.
-		// If no search field exists, fall back to clicking the template cell.
-		// Type the template name into the search field, wait for filter,
-		// then click the first result to select it (enables Next).
 		_ = typeIntoSearchField(sheet, template)
 		time.Sleep(800 * time.Millisecond)
 		if err := clickTemplateByName(sheet, template); err != nil {
 			axuiautomation.SendEscape()
 			msg := fmt.Sprintf("error: failed to select template %q: %v", template, err)
 			fmt.Fprintln(os.Stderr, msg)
-			_ = os.WriteFile("/tmp/xc-add-target.log", []byte(msg+"\n"), 0644)
 			os.Exit(1)
 		}
 
@@ -1759,117 +1593,13 @@ var xcodeAddTargetCmd = &cobra.Command{
 		time.Sleep(500 * time.Millisecond)
 		dismissActivateScheme(app)
 
-		msg := fmt.Sprintf("added target %q (template: %s)", product, template)
-		fmt.Println(msg)
-		_ = os.WriteFile("/tmp/xc-add-target.log", []byte(msg+"\n"), 0644)
-	},
-}
-
-var xcodeMenuDumpCmd = &cobra.Command{
-	Use:   "menu-dump",
-	Short: "Dump File > New submenu items from Xcode (debug)",
-	Run: func(cmd *cobra.Command, args []string) {
-		app, err := axuiautomation.NewApplication("com.apple.dt.Xcode")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		defer app.Close()
-		_ = app.Activate()
-
-		// Retry getting menu bar
-		var menuBar *axuiautomation.Element
-		for i := 0; i < 10; i++ {
-			time.Sleep(300 * time.Millisecond)
-			menuBar = app.MenuBar()
-			if menuBar != nil {
-				break
-			}
-		}
-		if menuBar == nil {
-			fmt.Fprintln(os.Stderr, "menu bar not found after retries")
-			os.Exit(1)
-		}
-		defer menuBar.Release()
-
-		// Find File menu and dump everything under File > New
-		for _, child := range menuBar.Children() {
-			if child.Title() != "File" {
-				continue
-			}
-			_ = child.Click()
-			time.Sleep(400 * time.Millisecond)
-			for _, sub := range child.Children() {
-				if sub.Role() != "AXMenu" {
-					continue
-				}
-				for _, item := range sub.Children() {
-					if item.Title() != "New" {
-						continue
-					}
-					_ = item.Click()
-					time.Sleep(400 * time.Millisecond)
-					for _, newSub := range item.Children() {
-						if newSub.Role() != "AXMenu" {
-							continue
-						}
-						fmt.Println("File > New items:")
-						for _, newItem := range newSub.Children() {
-							title := newItem.Title()
-							fmt.Printf("  role=%-20s title=%q (hex:", newItem.Role(), title)
-							for _, r := range title {
-								fmt.Printf(" %04x", r)
-							}
-							fmt.Printf(") enabled=%v\n", newItem.IsEnabled())
-						}
-					}
-				}
-			}
-		}
-		axuiautomation.SendEscape()
-		time.Sleep(100 * time.Millisecond)
-		axuiautomation.SendEscape()
-	},
-}
-
-var xcodeSheetDumpCmd = &cobra.Command{
-	Use:   "sheet-dump",
-	Short: "Dump all named elements in the open Xcode sheet (debug)",
-	Run: func(cmd *cobra.Command, args []string) {
-		app, err := axuiautomation.NewApplication("com.apple.dt.Xcode")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		defer app.Close()
-
-		sheet, err := waitForSheet(app, 5*time.Second)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "no sheet found: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Print the full role hierarchy to understand the sheet structure.
-		var printTree func(e *axuiautomation.Element, depth int)
-		printTree = func(e *axuiautomation.Element, depth int) {
-			indent := strings.Repeat("  ", depth)
-			t, v := e.Title(), e.Value()
-			fmt.Printf("%s[%s] title=%q value=%q\n", indent, e.Role(), t, v)
-			if depth < 5 {
-				for _, child := range e.Children() {
-					printTree(child, depth+1)
-				}
-			}
-		}
-		printTree(sheet, 0)
+		fmt.Printf("added target %q (template: %s)\n", product, template)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(xcodeCmd)
 	xcodeCmd.AddCommand(xcodeAddTargetCmd)
-	xcodeCmd.AddCommand(xcodeMenuDumpCmd)
-	xcodeCmd.AddCommand(xcodeSheetDumpCmd)
 
 	xcodeAddTargetCmd.Flags().String("template", "", "Target template name (e.g. 'Widget Extension')")
 	xcodeAddTargetCmd.Flags().String("product", "", "Product name for the new target")
@@ -1899,7 +1629,6 @@ func clickTemplateByName(sheet *axuiautomation.Element, name string) error {
 	for time.Now().Before(deadline) {
 		var found *axuiautomation.Element
 
-		// Match any element whose title or value contains the name.
 		sheet.Descendants().ForEach(func(e *axuiautomation.Element) bool {
 			t, v := e.Title(), e.Value()
 			if strings.Contains(t, name) || strings.Contains(v, name) {
@@ -1915,22 +1644,6 @@ func clickTemplateByName(sheet *axuiautomation.Element, name string) error {
 			return err
 		}
 		time.Sleep(300 * time.Millisecond)
-	}
-	// Debug: write all elements to log file.
-	logf, _ := os.OpenFile("/tmp/xc-add-target.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if logf != nil {
-		fmt.Fprintf(logf, "template %q not found. elements in sheet:\n", name)
-		seen := map[string]bool{}
-		sheet.Descendants().ForEach(func(e *axuiautomation.Element) bool {
-			t, v := e.Title(), e.Value()
-			key := e.Role() + "|" + t + "|" + v
-			if (t != "" || v != "") && !seen[key] {
-				seen[key] = true
-				fmt.Fprintf(logf, "  role=%-30s title=%q value=%q\n", e.Role(), t, v)
-			}
-			return true
-		})
-		logf.Close()
 	}
 	return fmt.Errorf("template %q not found", name)
 }

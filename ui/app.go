@@ -470,13 +470,6 @@ func (e *Element) PerformAction(action string) {
 	axPerformAction(e.ax, key)
 }
 
-func (e *Element) DoubleTap()                                 {}
-func (e *Element) Press(d float64)                            {}
-func (e *Element) TypeText(t string)                          { e.SetValue(t) }
-func (e *Element) WaitForExistence(t float64) bool            { return e.Exists() }
-func (e *Element) AdjustToNormalizedSliderPosition(p float64) {}
-func (e *Element) DragTo(o *Element, d float64)               {}
-
 func (e *Element) Exists() bool {
 	return e.ax != 0
 }
@@ -519,9 +512,6 @@ func (e *Element) Frame() corefoundation.CGRect {
 	return e.getFrame()
 }
 
-func (e *Element) SetValue(val string) {
-}
-
 func (e *Element) Children() []*Element {
 	var ptr uintptr
 	key := MkString("AXChildren")
@@ -546,9 +536,6 @@ func (e *Element) FindChildren(role string) []*Element {
 		if child.Role() == role {
 			res = append(res, child)
 		}
-		// Recursive check? Or just direct children?
-		// Usually Windows are top level, buttons inside.
-		// Let's do simple BFS/DFS or just direct children for now.
 	}
 	return res
 }
@@ -656,10 +643,3 @@ type Attributes struct {
 	Selected   bool
 	HasFocus   bool
 }
-
-type Coordinate struct{}
-
-func (c *Coordinate) Tap() {}
-
-func CoordinateAt(x, y float64) *Coordinate { return &Coordinate{} }
-func FocusedElement() *Element              { return nil }

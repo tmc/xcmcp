@@ -114,7 +114,7 @@ func registerToolsetTools(s *mcp.Server) {
 	})
 	globalToolsets.add(toolset{
 		name:        "ui",
-		description: "UI automation tools: tap, type, swipe, tree, screenshot, query, inspect, drag",
+		description: "UI automation tools: tap, tree, screenshot, query, inspect, wait, list windows, list buttons",
 		register:    registerUITools,
 	})
 	globalToolsets.add(toolset{

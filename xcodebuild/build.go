@@ -34,12 +34,6 @@ func Test(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	return runXcodebuild(ctx, "test", opts)
 }
 
-// Clean runs xcodebuild clean.
-func Clean(ctx context.Context, opts BuildOptions) error {
-	_, err := runXcodebuild(ctx, "clean", opts)
-	return err
-}
-
 func runXcodebuild(ctx context.Context, action string, opts BuildOptions) (*BuildResult, error) {
 	start := time.Now()
 	args := []string{action}

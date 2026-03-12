@@ -291,13 +291,3 @@ func ListBootedDevices() []SimDevice {
 	}
 	return booted
 }
-
-// FindBootedDevice returns the first booted simulator device.
-// Returns an error if no booted device is found.
-func FindBootedDevice() (SimDevice, error) {
-	devices := ListBootedDevices()
-	if len(devices) == 0 {
-		return SimDevice{}, fmt.Errorf("no booted simulator found")
-	}
-	return devices[0], nil
-}

@@ -38,19 +38,6 @@ func initDispatch() {
 	})
 }
 
-// GetMainQueue returns the main dispatch queue.
-func GetMainQueue() uintptr {
-	initDispatch()
-	return dispatchMainQueue
-}
-
-// GetGlobalQueue returns a global dispatch queue.
-func GetGlobalQueue() uintptr {
-	initDispatch()
-	// QOS_CLASS_DEFAULT = 0x15
-	return _dispatch_get_global_queue(0x15, 0)
-}
-
 // CreateQueue creates a new serial dispatch queue.
 func CreateQueue(label string) uintptr {
 	initDispatch()

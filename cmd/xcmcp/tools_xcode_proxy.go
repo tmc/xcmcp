@@ -279,13 +279,3 @@ func pollBuildErrors(s *mcp.Server, proxy *xcodeProxy, uri string) {
 		}
 	}
 }
-
-// Close shuts down the mcpbridge session and waits for the child process to exit.
-func (p *xcodeProxy) Close() error {
-	if p.session != nil {
-		if err := p.session.Close(); err != nil {
-			log.Printf("xcodeProxy: session close: %v", err)
-		}
-	}
-	return nil
-}

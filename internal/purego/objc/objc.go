@@ -87,11 +87,6 @@ const (
 	RTLD_GLOBAL = basepurego.RTLD_GLOBAL
 )
 
-// RegisterName registers a selector with the Objective-C runtime.
-func RegisterName(name string) SEL {
-	return purego.RegisterName(name)
-}
-
 var (
 	objcLib                uintptr
 	objcOnce               sync.Once

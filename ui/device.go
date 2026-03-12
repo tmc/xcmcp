@@ -8,6 +8,4 @@ func (d *Device) PressHome()           {}
 func (d *Device) PressVolumeUp()       {}
 func (d *Device) PressVolumeDown()     {}
 func (d *Device) PressLock()           {}
-func (d *Device) PressButton(id int)   {}
 func (d *Device) SetOrientation(o int) {}
-func (d *Device) Orientation() int     { return 0 }
