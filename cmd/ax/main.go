@@ -11,12 +11,21 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/tmc/macgo"
 	"github.com/tmc/apple/x/axuiautomation"
+	"github.com/tmc/macgo"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 func main() {
 	runtime.LockOSThread()
+
+	// Handle -h/--help before macgo.Start to avoid app bundle relaunch.
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" || arg == "-help" || arg == "help" {
+			_ = rootCmd.Help()
+			os.Exit(0)
+		}
+	}
 
 	cfg := macgo.NewConfig().
 		WithAppName("ax").
@@ -28,6 +37,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "macgo start failed: %v\n", err)
 		os.Exit(1)
 	}
+
+	ui.CheckTrust()
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

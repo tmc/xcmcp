@@ -26,12 +26,19 @@ import (
 func main() {
 	runtime.LockOSThread()
 
+	// Handle -h/--help before macgo.Start to avoid app bundle relaunch.
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" || arg == "-help" || arg == "help" {
+			_ = rootCmd.Help()
+			os.Exit(0)
+		}
+	}
+
 	// Initialize macgo for TCC identity
 	cfg := macgo.NewConfig().
 		WithAppName("xc").
 		WithPermissions(macgo.Accessibility).
 		WithAdHocSign()
-		// WithUIMode(macgo.UIModeRegular).
 	cfg.BundleID = "dev.tmc.xc"
 
 	if err := macgo.Start(cfg); err != nil {
@@ -41,6 +48,8 @@ func main() {
 
 	// Initialize AppKit
 	_ = appkit.GetNSApplicationClass().SharedApplication()
+
+	ui.CheckTrust()
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

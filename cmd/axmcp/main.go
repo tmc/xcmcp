@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -15,15 +16,24 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
-	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/macgo"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
+var verbose = flag.Bool("v", false, "enable verbose debug logging")
+
 func main() {
-	verbose := flag.Bool("v", false, "enable verbose debug logging")
-	flag.Parse()
+	// Handle -h/--help before macgo.Start to avoid app bundle relaunch.
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" || arg == "-help" {
+			fmt.Fprintf(os.Stderr, "Usage: axmcp [flags]\n\naxmcp is an MCP server for macOS Accessibility API automation.\n\nFlags:\n")
+			flag.PrintDefaults()
+			os.Exit(0)
+		}
+	}
 
 	runtime.LockOSThread()
+	flag.Parse()
 
 	cfg := macgo.NewConfig().
 		WithAppName("axmcp").
@@ -59,25 +69,24 @@ func main() {
 	// Initialize AppKit — required for NSWindow, buttons, and DispatchMainSafe.
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
-	axuiautomation.CheckTrust()
+	ui.CheckTrust()
 
-	isScreenshot := len(os.Args) >= 2 && os.Args[1] == "screenshot"
-	isServer := !isTTY() && len(os.Args) <= 1
-
-	if isScreenshot || isServer {
-		axuiautomation.CheckScreenCapture()
+	// Only check screen recording eagerly for the CLI screenshot subcommand.
+	// MCP server mode defers the check until a screenshot tool is actually called.
+	if len(os.Args) >= 2 && os.Args[1] == "screenshot" {
+		ui.CheckScreenCapture()
 	}
 
 	if isTTY() || len(os.Args) > 1 {
 		// Run CLI in goroutine so main thread can drive the AppKit run loop.
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			for !axuiautomation.AXIsProcessTrusted() {
+			for !ui.IsTrusted() {
 				time.Sleep(500 * time.Millisecond)
 			}
 			// Wait for Screen Recording if screenshotting.
 			if len(os.Args) >= 2 && os.Args[1] == "screenshot" {
-				for !axuiautomation.IsScreenRecordingTrusted() {
+				for !ui.IsScreenRecordingTrusted() {
 					time.Sleep(500 * time.Millisecond)
 				}
 			}
