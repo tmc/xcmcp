@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -16,8 +17,38 @@ import (
 	"github.com/tmc/xcmcp/internal/ui"
 )
 
+// Define flags at package level so they can be registered before macgo.Start.
+var (
+	enableAll            = flag.Bool("enable-all", false, "Enable all optional toolsets at startup")
+	enableApp            = flag.Bool("enable-app-tools", false, "Enable app management tools at startup")
+	enableUI             = flag.Bool("enable-ui-tools", false, "Enable UI automation tools at startup")
+	enableDevice         = flag.Bool("enable-device-tools", false, "Enable simulator device control tools at startup")
+	enableIOS            = flag.Bool("enable-ios-tools", false, "Enable iOS-specific tools at startup")
+	enableSimExtras      = flag.Bool("enable-sim-extras", false, "Enable simulator extras (open URL, add media, container path) at startup")
+	enablePhysical       = flag.Bool("enable-physical-device-tools", false, "Enable physical device management tools at startup")
+	enableVideo          = flag.Bool("enable-video-tools", false, "Enable video recording tools at startup")
+	enableCrash          = flag.Bool("enable-crash-tools", false, "Enable crash reporting tools at startup")
+	enableFS             = flag.Bool("enable-fs-tools", false, "Enable file system tools at startup")
+	enableDeps           = flag.Bool("enable-dependency-tools", false, "Enable dependency management tools at startup")
+	enableResources      = flag.Bool("enable-resources", true, "Enable resource management")
+	enableASC            = flag.Bool("enable-asc-tools", false, "Enable App Store Connect and altool tools at startup")
+	enableXcode          = flag.Bool("enable-xcode-tools", true, "Enable Xcode tools via xcrun mcpbridge")
+	xcodeToolsPrefix     = flag.String("xcode-tools-prefix", "", "Optional prefix for proxied Xcode tool names")
+	xcodeOnly            = flag.Bool("xcode-only", false, "Only register Xcode bridge tools, skip all native xcmcp tools")
+	subscribeBuildErrors = flag.Bool("subscribe-build-errors", false, "Expose Xcode build errors as a subscribable resource")
+)
+
 func main() {
 	runtime.LockOSThread()
+
+	// Handle -h/--help before macgo.Start to avoid unnecessary app bundle relaunch.
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" || arg == "-help" {
+			fmt.Fprintf(os.Stderr, "Usage: xcmcp [flags]\n\nxcmcp is an MCP server for Xcode projects, simulators, and devices.\n\nFlags:\n")
+			flag.PrintDefaults()
+			os.Exit(0)
+		}
+	}
 
 	// Force new instance to ensure each CLI invocation gets a dedicated app instance with fresh pipes
 	os.Setenv("MACGO_OPEN_NEW_INSTANCE", "1")
@@ -38,24 +69,6 @@ func main() {
 	// Initialize AppKit to satisfy LaunchServices
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
-	// Parse flags first to configure capabilities
-	enableAll := flag.Bool("enable-all", false, "Enable all optional toolsets at startup")
-	enableApp := flag.Bool("enable-app-tools", false, "Enable app management tools at startup")
-	enableUI := flag.Bool("enable-ui-tools", false, "Enable UI automation tools at startup")
-	enableDevice := flag.Bool("enable-device-tools", false, "Enable simulator device control tools at startup")
-	enableIOS := flag.Bool("enable-ios-tools", false, "Enable iOS-specific tools at startup")
-	enableSimExtras := flag.Bool("enable-sim-extras", false, "Enable simulator extras (open URL, add media, container path) at startup")
-	enablePhysical := flag.Bool("enable-physical-device-tools", false, "Enable physical device management tools at startup")
-	enableVideo := flag.Bool("enable-video-tools", false, "Enable video recording tools at startup")
-	enableCrash := flag.Bool("enable-crash-tools", false, "Enable crash reporting tools at startup")
-	enableFS := flag.Bool("enable-fs-tools", false, "Enable file system tools at startup")
-	enableDeps := flag.Bool("enable-dependency-tools", false, "Enable dependency management tools at startup")
-	enableResources := flag.Bool("enable-resources", true, "Enable resource management")
-	enableASC := flag.Bool("enable-asc-tools", false, "Enable App Store Connect and altool tools at startup")
-	enableXcode := flag.Bool("enable-xcode-tools", true, "Enable Xcode tools via xcrun mcpbridge")
-	xcodeToolsPrefix := flag.String("xcode-tools-prefix", "", "Optional prefix for proxied Xcode tool names")
-	xcodeOnly := flag.Bool("xcode-only", false, "Only register Xcode bridge tools, skip all native xcmcp tools")
-	subscribeBuildErrors := flag.Bool("subscribe-build-errors", false, "Expose Xcode build errors as a subscribable resource")
 	flag.Parse()
 
 	if *enableAll {
@@ -129,6 +142,7 @@ func main() {
 		registerListSimulators(server)
 		registerBootSimulator(server)
 		registerShutdownSimulator(server)
+		registerSwiftUIPreviewFeatures(server)
 		registerXcodeTargetTools(server)
 		// list_toolsets + enable_toolset — declares all optional categories.
 		registerToolsetTools(server)
