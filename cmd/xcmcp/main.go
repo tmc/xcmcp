@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
@@ -33,6 +34,7 @@ var (
 	enableResources      = flag.Bool("enable-resources", true, "Enable resource management")
 	enableASC            = flag.Bool("enable-asc-tools", false, "Enable App Store Connect and altool tools at startup")
 	enableXcode          = flag.Bool("enable-xcode-tools", true, "Enable Xcode tools via xcrun mcpbridge")
+	waitForXcode         = flag.Duration("wait-for-xcode", 30*time.Second, "Max time to wait for Xcode bridge tools before accepting MCP connections (0 to disable)")
 	xcodeToolsPrefix     = flag.String("xcode-tools-prefix", "", "Optional prefix for proxied Xcode tool names")
 	xcodeOnly            = flag.Bool("xcode-only", false, "Only register Xcode bridge tools, skip all native xcmcp tools")
 	subscribeBuildErrors = flag.Bool("subscribe-build-errors", false, "Expose Xcode build errors as a subscribable resource")
@@ -126,7 +128,7 @@ func main() {
 
 	// The xcode bridge toolset must be declared before registerToolsetTools
 	// so it appears in list_toolsets / enable_toolset descriptions.
-	addXcodeBridgeToolset(*xcodeToolsPrefix, *subscribeBuildErrors)
+	addXcodeBridgeToolset(*xcodeToolsPrefix, *subscribeBuildErrors, *waitForXcode > 0)
 	if *enableXcode || *xcodeOnly {
 		_ = globalToolsets.enable(server, "xcode")
 	}
@@ -176,8 +178,22 @@ func main() {
 	// Create transport
 	transport := &mcp.StdioTransport{}
 
-	// Run server in goroutine to allow main thread to handle RunLoop
+	// Run server in goroutine to allow main thread to handle RunLoop.
+	// When --wait-for-xcode is set, delay accepting connections until
+	// the bridge tools have been discovered so the initial tools/list
+	// response includes all Xcode tools.
 	go func() {
+		if *waitForXcode > 0 {
+			log.Printf("Waiting up to %v for Xcode bridge tools...", *waitForXcode)
+			done := make(chan struct{})
+			go func() { xcodeReady.Wait(); close(done) }()
+			select {
+			case <-done:
+				log.Println("Xcode bridge ready, starting MCP server")
+			case <-time.After(*waitForXcode):
+				log.Println("Xcode bridge timeout, starting MCP server without bridge tools")
+			}
+		}
 		if err := server.Run(context.TODO(), transport); err != nil {
 			log.Printf("Server error: %v", err)
 		}
