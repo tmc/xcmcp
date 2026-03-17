@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 // toolset describes an optional group of tools that can be enabled at runtime.
@@ -28,6 +30,10 @@ type toolsetRegistry struct {
 var globalToolsets = &toolsetRegistry{
 	enabled: map[string]bool{},
 }
+
+// xcodeReady is signalled when the xcode bridge toolset finishes discovery
+// (or fails). When --wait-for-xcode is set, server.Run blocks on this.
+var xcodeReady sync.WaitGroup
 
 func (r *toolsetRegistry) add(ts toolset) {
 	r.mu.Lock()
@@ -79,15 +85,40 @@ func (r *toolsetRegistry) list() []map[string]string {
 
 // addXcodeBridgeToolset adds the Xcode mcpbridge as a named toolset. Call this
 // before registerToolsetTools so it appears in the list and description.
-func addXcodeBridgeToolset(prefix string, subscribeBuildErrors bool) {
+func addXcodeBridgeToolset(prefix string, subscribeBuildErrors bool, wait bool) {
+	if wait {
+		xcodeReady.Add(1)
+	}
 	globalToolsets.add(toolset{
 		name:        "xcode",
 		description: "Xcode IDE tools via xcrun mcpbridge (build log, source navigation, diagnostics, etc.)",
 		async:       true,
 		register: func(s *mcp.Server) {
-			proxy, err := newXcodeProxy(context.Background())
-			if err != nil {
-				slog.Warn("xcode tools unavailable", "err", err)
+			if wait {
+				defer xcodeReady.Done()
+			}
+
+			// Wait for Accessibility trust before attempting to auto-allow
+			// the Xcode MCP permission dialog. Without AX permission, the
+			// auto-clicker cannot interact with Xcode's UI.
+			for !ui.IsTrusted() {
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			const maxRetries = 5
+			var proxy *xcodeProxy
+			for attempt := range maxRetries {
+				var err error
+				proxy, err = newXcodeProxy(context.Background())
+				if err == nil {
+					break
+				}
+				backoff := time.Duration(attempt+1) * 3 * time.Second
+				slog.Warn("xcode bridge connect failed, retrying", "err", err, "attempt", attempt+1, "backoff", backoff)
+				time.Sleep(backoff)
+			}
+			if proxy == nil {
+				slog.Warn("xcode tools unavailable after retries")
 				return
 			}
 			n, err := registerXcodeTools(s, proxy, prefix)
