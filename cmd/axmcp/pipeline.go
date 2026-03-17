@@ -21,6 +21,8 @@ type pipeContext struct {
 	app      *axuiautomation.Application
 	element  *axuiautomation.Element
 	elements []*axuiautomation.Element
+	findNote string
+	findPick *matchedElement
 }
 
 func (pc *pipeContext) close() {
@@ -121,6 +123,9 @@ func tokenize(s string) []string {
 }
 
 func writeContext(buf *strings.Builder, pc *pipeContext) {
+	if pc.findNote != "" {
+		fmt.Fprintln(buf, pc.findNote)
+	}
 	switch {
 	case len(pc.elements) > 0:
 		for i, e := range pc.elements {
@@ -134,20 +139,11 @@ func writeContext(buf *strings.Builder, pc *pipeContext) {
 }
 
 func writeElement(buf *strings.Builder, idx int, e *axuiautomation.Element) {
-	role := e.Role()
-	title := e.Title()
-	val := e.Value()
 	var parts []string
 	if idx >= 0 {
 		parts = append(parts, fmt.Sprintf("[%d]", idx))
 	}
-	parts = append(parts, role)
-	if title != "" {
-		parts = append(parts, fmt.Sprintf("%q", title))
-	}
-	if val != "" && val != title {
-		parts = append(parts, fmt.Sprintf("= %q", val))
-	}
+	parts = append(parts, formatSnapshot(snapshotElement(e, 0, idx)))
 	fmt.Fprintln(buf, strings.Join(parts, " "))
 }
 
@@ -188,6 +184,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		pc.app = app
 		pc.element = app.Root()
 		pc.elements = nil
+		pc.findNote = ""
+		pc.findPick = nil
 		// Spin again after opening the app so AX IPC is primed for this specific app.
 		axuiautomation.SpinRunLoop(200 * time.Millisecond)
 
@@ -208,6 +206,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			pc.element = wins[0]
 		}
 		pc.elements = nil
+		pc.findNote = ""
+		pc.findPick = nil
 		if pc.element == nil {
 			return fmt.Errorf("window: not found")
 		}
@@ -243,6 +243,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			pc.elements = allWins
 			pc.element = nil
 		}
+		pc.findNote = ""
+		pc.findPick = nil
 
 	case "focus":
 		if pc.app == nil {
@@ -250,6 +252,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		}
 		pc.element = pc.app.FocusedElement()
 		pc.elements = nil
+		pc.findNote = ""
+		pc.findPick = nil
 		if pc.element == nil {
 			return fmt.Errorf("focus: no focused element")
 		}
@@ -266,6 +270,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			return err
 		}
 		fmt.Fprintf(buf, "raised %s %q\n", el.Role(), el.Title())
+		pc.findNote = ""
+		pc.findPick = nil
 
 	case "children":
 		if pc.element == nil {
@@ -273,6 +279,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		}
 		pc.elements = pc.element.Children()
 		pc.element = nil
+		pc.findNote = ""
+		pc.findPick = nil
 
 	case "first":
 		if len(pc.elements) == 0 {
@@ -280,6 +288,8 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		}
 		pc.element = pc.elements[0]
 		pc.elements = nil
+		pc.findNote = ""
+		pc.findPick = nil
 
 	case "find":
 		root := pc.element
@@ -289,33 +299,42 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		if root == nil {
 			return fmt.Errorf("find: no context")
 		}
-		q := root.Descendants()
+		opts := searchOptions{Limit: 200}
 		for i := 0; i < len(args); i++ {
 			switch args[i] {
 			case "--role", "-r":
 				if i+1 < len(args) {
-					q = q.ByRole(args[i+1])
+					opts.Role = args[i+1]
 					i++
 				}
 			case "--title", "-t":
 				if i+1 < len(args) {
-					q = q.ByTitle(args[i+1])
+					opts.Title = args[i+1]
 					i++
 				}
 			case "--contains", "-c":
 				if i+1 < len(args) {
-					q = q.ByTitleContains(args[i+1])
+					opts.Contains = args[i+1]
 					i++
 				}
 			case "--id", "-i":
 				if i+1 < len(args) {
-					q = q.ByIdentifier(args[i+1])
+					opts.Identifier = args[i+1]
 					i++
 				}
 			}
 		}
-		pc.elements = q.AllElements()
+		result := findElements(root, opts)
+		if len(result.matches) == 0 {
+			return fmt.Errorf("%s", noMatchMessage(result))
+		}
+		pc.elements = make([]*axuiautomation.Element, 0, len(result.matches))
+		for _, match := range result.matches {
+			pc.elements = append(pc.elements, match.snapshot.element)
+		}
 		pc.element = nil
+		pc.findNote = selectionReason(result)
+		pc.findPick = &result.matches[0]
 
 	case "click":
 		el := pc.element
@@ -325,10 +344,25 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		if el == nil {
 			return fmt.Errorf("click: no element in context")
 		}
-		if err := el.Click(); err != nil {
+		target := el
+		var clickNote string
+		if pc.findPick != nil && target == pc.findPick.snapshot.element {
+			resolution := resolveClickTarget(*pc.findPick, 50)
+			clickNote = resolution.reason
+			if resolution.target.element != nil {
+				target = resolution.target.element
+			}
+		}
+		if err := target.Click(); err != nil {
 			return err
 		}
-		fmt.Fprintf(buf, "clicked %s %q\n", el.Role(), el.Title())
+		fmt.Fprintf(buf, "clicked %s\n", formatSnapshot(snapshotElement(target, 0, 0)))
+		if pc.findNote != "" {
+			fmt.Fprintln(buf, pc.findNote)
+		}
+		if clickNote != "" {
+			fmt.Fprintln(buf, clickNote)
+		}
 
 	case "click-at":
 		if len(args) != 2 {
@@ -346,10 +380,25 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		if el == nil {
 			return fmt.Errorf("click-at: no element in context")
 		}
-		if err := el.ClickAt(xOffset, yOffset); err != nil {
+		target := el
+		var clickNote string
+		if pc.findPick != nil && target == pc.findPick.snapshot.element {
+			resolution := resolveClickTarget(*pc.findPick, 50)
+			clickNote = resolution.reason
+			if resolution.target.element != nil {
+				target = resolution.target.element
+			}
+		}
+		if err := target.ClickAt(xOffset, yOffset); err != nil {
 			return err
 		}
-		fmt.Fprintf(buf, "clicked-at %d,%d %s %q\n", xOffset, yOffset, el.Role(), el.Title())
+		fmt.Fprintf(buf, "clicked-at %d,%d %s\n", xOffset, yOffset, formatSnapshot(snapshotElement(target, 0, 0)))
+		if pc.findNote != "" {
+			fmt.Fprintln(buf, pc.findNote)
+		}
+		if clickNote != "" {
+			fmt.Fprintln(buf, clickNote)
+		}
 
 	case "hover":
 		el := pc.element
@@ -369,6 +418,9 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			return fmt.Errorf("type: requires text argument")
 		}
 		el := pc.element
+		if el == nil && len(pc.elements) > 0 {
+			el = pc.elements[0]
+		}
 		if el == nil {
 			return fmt.Errorf("type: no element in context")
 		}
@@ -376,7 +428,7 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		if err := el.TypeText(text); err != nil {
 			return err
 		}
-		fmt.Fprintf(buf, "typed %q into %s\n", text, el.Role())
+		fmt.Fprintf(buf, "typed %q into %s\n", text, formatSnapshot(snapshotElement(el, 0, 0)))
 
 	case "attr":
 		if len(args) == 0 {
@@ -485,7 +537,7 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			"  raise\n"+
 			"  children\n"+
 			"  first\n"+
-			"  find [--role R] [--title T] [--contains C] [--id I]\n"+
+			"  find [--role R] [--title T] [--contains C] [--id I]  (normalized text match)\n"+
 			"  .\n"+
 			"  tree [--depth N]\n"+
 			"  list\n"+

@@ -137,7 +137,7 @@ func cliFind() *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "find <app>",
-		Short: "Find AX elements by role, title, or substring",
+		Short: "Find AX elements by role or normalized text lookup",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, err := spinAndOpen(args[0])
@@ -148,25 +148,28 @@ func cliFind() *cobra.Command {
 			if limit <= 0 {
 				limit = 50
 			}
-			q := app.Descendants().WithLimit(limit)
-			if role != "" {
-				q = q.ByRole(role)
+			result := findElements(app.Root(), searchOptions{
+				Role:     role,
+				Title:    title,
+				Contains: contains,
+				Limit:    limit,
+			})
+			if len(result.matches) == 0 {
+				fmt.Println(noMatchMessage(result))
+				return nil
 			}
-			if title != "" {
-				q = q.ByTitle(title)
+			if note := selectionReason(result); note != "" {
+				fmt.Println(note)
 			}
-			if contains != "" {
-				q = q.ByTitleContains(contains)
-			}
-			for i, e := range q.AllElements() {
-				fmt.Printf("[%d] %s\n", i, elementSummary(e))
+			for i, match := range result.matches {
+				fmt.Printf("[%d] %s\n", i, formatMatch(match))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&role, "role", "", "AX role filter (e.g. AXButton)")
-	cmd.Flags().StringVar(&title, "title", "", "exact title match")
-	cmd.Flags().StringVar(&contains, "contains", "", "title substring match")
+	cmd.Flags().StringVar(&title, "title", "", "exact text match across title, desc, value, and identifier")
+	cmd.Flags().StringVar(&contains, "contains", "", "substring match across title, desc, value, and identifier")
 	cmd.Flags().IntVar(&limit, "limit", 50, "max results")
 	return cmd
 }
@@ -190,9 +193,9 @@ Available stages:
   first                       Take first element from list
   find [flags]                Search descendants
         --role R              Filter by AXRole
-        --title T             Filter by exact title
-        --contains C          Filter by title substring
-        --id I                Filter by AXIdentifier
+        --title T             Exact text match across title, desc, value, identifier
+        --contains C          Substring match across title, desc, value, identifier
+        --id I                Exact identifier filter
   .                           Print current context
   tree [--depth N]            Print element tree
   list                        Print element list
@@ -225,7 +228,7 @@ func cliClick() *cobra.Command {
 	var role string
 	cmd := &cobra.Command{
 		Use:   "click <app> <contains>",
-		Short: "Click an element found by title substring",
+		Short: "Click an element found by normalized text lookup",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, err := spinAndOpen(args[0])
@@ -233,18 +236,30 @@ func cliClick() *cobra.Command {
 				return err
 			}
 			defer app.Close()
-			q := app.Descendants().WithLimit(100).ByTitleContains(args[1])
-			if role != "" {
-				q = q.ByRole(role)
+			result := findElements(app.Root(), searchOptions{
+				Role:     role,
+				Contains: args[1],
+				Limit:    100,
+			})
+			if len(result.matches) == 0 {
+				return fmt.Errorf("%s", noMatchMessage(result))
 			}
-			el := q.First()
+			match := result.matches[0]
+			resolution := resolveClickTarget(match, 50)
+			el := resolution.target.element
 			if el == nil {
-				return fmt.Errorf("element containing %q not found", args[1])
+				return fmt.Errorf("click target disappeared: %s", formatMatch(match))
 			}
 			if err := el.Click(); err != nil {
-				return fmt.Errorf("click: %w", err)
+				return fmt.Errorf("click %s: %w", formatSnapshot(resolution.target), err)
 			}
-			fmt.Printf("clicked %s %q\n", el.Role(), el.Title())
+			fmt.Printf("clicked %s\n", formatSnapshot(resolution.target))
+			if note := selectionReason(result); note != "" {
+				fmt.Println(note)
+			}
+			if resolution.reason != "" {
+				fmt.Println(resolution.reason)
+			}
 			return nil
 		},
 	}
@@ -257,7 +272,7 @@ func cliClick() *cobra.Command {
 func cliType() *cobra.Command {
 	return &cobra.Command{
 		Use:   "type <app> <contains> <text>",
-		Short: "Type text into an element found by title substring",
+		Short: "Type text into an element found by normalized text lookup",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, err := spinAndOpen(args[0])
@@ -265,17 +280,27 @@ func cliType() *cobra.Command {
 				return err
 			}
 			defer app.Close()
-			el := app.Descendants().WithLimit(100).ByTitleContains(args[1]).First()
+			result := findElements(app.Root(), searchOptions{
+				Contains: args[1],
+				Limit:    100,
+			})
+			if len(result.matches) == 0 {
+				return fmt.Errorf("%s", noMatchMessage(result))
+			}
+			el := result.matches[0].snapshot.element
 			if el == nil {
-				return fmt.Errorf("element %q not found", args[1])
+				return fmt.Errorf("type target disappeared: %s", formatMatch(result.matches[0]))
 			}
 			if err := el.Click(); err != nil {
-				return fmt.Errorf("focus: %w", err)
+				return fmt.Errorf("focus %s: %w", formatMatch(result.matches[0]), err)
 			}
 			if err := el.TypeText(args[2]); err != nil {
-				return fmt.Errorf("type: %w", err)
+				return fmt.Errorf("type %s: %w", formatMatch(result.matches[0]), err)
 			}
-			fmt.Printf("typed into %s %q\n", el.Role(), el.Title())
+			fmt.Printf("typed into %s\n", formatMatch(result.matches[0]))
+			if note := selectionReason(result); note != "" {
+				fmt.Println(note)
+			}
 			return nil
 		},
 	}
