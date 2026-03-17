@@ -18,11 +18,15 @@ import (
 )
 
 // xcodeProxy manages a child mcpbridge process and client session.
-// It automatically reconnects when the connection is lost (e.g. Xcode killed).
+// It automatically reconnects when the connection is lost (e.g. Xcode killed)
+// and re-discovers tools from the new session.
 type xcodeProxy struct {
-	mu      sync.Mutex
-	client  *mcp.Client
-	session *mcp.ClientSession
+	mu          sync.Mutex
+	client      *mcp.Client
+	session     *mcp.ClientSession
+	allowCancel context.CancelFunc // cancels the auto-allow dialog clicker
+	server      *mcp.Server       // for re-registering tools on reconnect
+	prefix      string            // tool name prefix for proxied tools
 }
 
 // newXcodeProxy starts xcrun mcpbridge as a child process, connects an MCP
@@ -45,32 +49,25 @@ func newXcodeProxy(ctx context.Context) (*xcodeProxy, error) {
 		Version: "0.1.0",
 	}, nil)
 
-	// Drain any Allow dialogs that may have built up from previous launches.
-	drainXcodeAllowDialogs()
-
-	// Watch for Xcode's "Allow" permission dialog and auto-dismiss it.
-	// Give the AppKit run loop a moment to start before launching mcpbridge,
-	// so the permission sheet can render and be clicked.
+	// Start auto-clicker for the Allow dialog before connecting.
+	// The dialog blocks tools/list, so keep the clicker alive until
+	// explicitly cancelled by the caller after tool discovery completes.
 	allowCtx, allowCancel := context.WithCancel(ctx)
 	go autoAllowXcodeDialog(allowCtx)
-	slog.Debug("waiting for run loop before launching mcpbridge")
-	time.Sleep(500 * time.Millisecond)
 
 	slog.Debug("connecting to mcpbridge via xcrun")
-	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	session, err := client.Connect(connectCtx, transport, nil)
-	// Keep polling for the allow dialog a little longer after connect —
-	// sometimes the sheet appears after the handshake.
-	time.AfterFunc(3*time.Second, allowCancel)
 	if err != nil {
 		allowCancel()
 		return nil, fmt.Errorf("connect to mcpbridge: %w", err)
 	}
 	slog.Debug("mcpbridge connected")
 	return &xcodeProxy{
-		client:  client,
-		session: session,
+		client:      client,
+		session:     session,
+		allowCancel: allowCancel,
 	}, nil
 }
 
@@ -79,6 +76,19 @@ func newXcodeProxy(ctx context.Context) (*xcodeProxy, error) {
 // prepended to each tool name with an underscore separator.
 func registerXcodeTools(s *mcp.Server, proxy *xcodeProxy, prefix string) (int, error) {
 	slog.Debug("registerXcodeTools: discovering tools from mcpbridge", "prefix", prefix)
+	// Cancel the auto-allow dialog clicker once tool discovery finishes.
+	if proxy.allowCancel != nil {
+		defer proxy.allowCancel()
+	}
+	// Stash server and prefix so reconnect can re-discover tools.
+	proxy.server = s
+	proxy.prefix = prefix
+	return proxy.discoverAndRegisterTools()
+}
+
+// discoverAndRegisterTools enumerates tools from the current mcpbridge
+// session and registers (or re-registers) each as a proxy tool.
+func (proxy *xcodeProxy) discoverAndRegisterTools() (int, error) {
 	ctx := context.Background()
 	n := 0
 	for tool, err := range proxy.session.Tools(ctx, nil) {
@@ -88,8 +98,8 @@ func registerXcodeTools(s *mcp.Server, proxy *xcodeProxy, prefix string) (int, e
 		slog.Debug("registerXcodeTools: registering tool", "name", tool.Name)
 
 		name := tool.Name
-		if prefix != "" {
-			name = prefix + "_" + tool.Name
+		if proxy.prefix != "" {
+			name = proxy.prefix + "_" + tool.Name
 		}
 
 		// Ensure the tool has an InputSchema. The mcpbridge tools should
@@ -108,7 +118,9 @@ func registerXcodeTools(s *mcp.Server, proxy *xcodeProxy, prefix string) (int, e
 		// Capture the original tool name for the proxy call.
 		originalName := tool.Name
 		handler := makeProxyHandler(proxy, originalName)
-		s.AddTool(registered, handler)
+		// AddTool replaces existing tools with the same name,
+		// so this is safe to call on reconnect.
+		proxy.server.AddTool(registered, handler)
 		n++
 	}
 	return n, nil
@@ -123,51 +135,77 @@ func isConnectionError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "EOF") ||
 		strings.Contains(msg, "closed") ||
-		strings.Contains(msg, "broken pipe")
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "process exited") ||
+		strings.Contains(msg, "signal: killed") ||
+		strings.Contains(msg, "signal: terminated")
 }
 
 // reconnect tears down the existing session and establishes a new one.
-// Caller must hold proxy.mu.
+// It retries up to 3 times with backoff. Caller must hold proxy.mu.
 func (proxy *xcodeProxy) reconnect(ctx context.Context) error {
 	if proxy.session != nil {
 		proxy.session.Close()
 	}
 	slog.Info("reconnecting to mcpbridge")
 
-	drainXcodeAllowDialogs()
+	const maxRetries = 3
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 2 * time.Second
+			slog.Debug("reconnect backoff", "attempt", attempt+1, "wait", backoff)
+			time.Sleep(backoff)
+		}
 
-	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
+		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 
-	cmd := exec.Command("xcrun", "mcpbridge")
-	if v := os.Getenv("MCP_XCODE_PID"); v != "" {
-		cmd.Env = append(os.Environ(), "MCP_XCODE_PID="+v)
+		cmd := exec.Command("xcrun", "mcpbridge")
+		if v := os.Getenv("MCP_XCODE_PID"); v != "" {
+			cmd.Env = append(os.Environ(), "MCP_XCODE_PID="+v)
+		}
+		if v := os.Getenv("MCP_XCODE_SESSION_ID"); v != "" {
+			cmd.Env = append(os.Environ(), "MCP_XCODE_SESSION_ID="+v)
+		}
+		cmd.Stderr = os.Stderr
+
+		transport := &mcp.CommandTransport{Command: cmd}
+		client := mcp.NewClient(&mcp.Implementation{
+			Name:    "xcmcp-xcode-proxy",
+			Version: "0.1.0",
+		}, nil)
+
+		allowCtx, allowCancel := context.WithCancel(ctx)
+		go autoAllowXcodeDialog(allowCtx)
+
+		session, err := client.Connect(connectCtx, transport, nil)
+		cancel()
+		if err != nil {
+			allowCancel()
+			lastErr = err
+			slog.Warn("reconnect attempt failed", "attempt", attempt+1, "err", err)
+			continue
+		}
+		proxy.client = client
+		proxy.session = session
+		slog.Info("mcpbridge reconnected", "attempt", attempt+1)
+
+		// Re-discover tools from the new session.
+		if proxy.server != nil {
+			n, err := proxy.discoverAndRegisterTools()
+			allowCancel()
+			if err != nil {
+				slog.Warn("failed to re-discover tools after reconnect", "err", err)
+			} else {
+				slog.Info("re-registered xcode tools after reconnect", "count", n)
+			}
+		} else {
+			time.AfterFunc(30*time.Second, allowCancel)
+		}
+		return nil
 	}
-	if v := os.Getenv("MCP_XCODE_SESSION_ID"); v != "" {
-		cmd.Env = append(os.Environ(), "MCP_XCODE_SESSION_ID="+v)
-	}
-	cmd.Stderr = os.Stderr
-
-	transport := &mcp.CommandTransport{Command: cmd}
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "xcmcp-xcode-proxy",
-		Version: "0.1.0",
-	}, nil)
-
-	allowCtx, allowCancel := context.WithCancel(ctx)
-	go autoAllowXcodeDialog(allowCtx)
-	time.Sleep(500 * time.Millisecond)
-
-	session, err := client.Connect(connectCtx, transport, nil)
-	time.AfterFunc(3*time.Second, allowCancel)
-	if err != nil {
-		allowCancel()
-		return fmt.Errorf("reconnect to mcpbridge: %w", err)
-	}
-	proxy.client = client
-	proxy.session = session
-	slog.Info("mcpbridge reconnected")
-	return nil
+	return fmt.Errorf("reconnect to mcpbridge after %d attempts: %w", maxRetries, lastErr)
 }
 
 // callTool forwards a tool call, reconnecting once on connection errors.
@@ -175,6 +213,19 @@ func (proxy *xcodeProxy) callTool(ctx context.Context, name string, args map[str
 	proxy.mu.Lock()
 	session := proxy.session
 	proxy.mu.Unlock()
+
+	if session == nil {
+		// Initial connection never succeeded — try connecting now.
+		proxy.mu.Lock()
+		if proxy.session == nil {
+			if err := proxy.reconnect(ctx); err != nil {
+				proxy.mu.Unlock()
+				return nil, fmt.Errorf("xcode unavailable: %w", err)
+			}
+		}
+		session = proxy.session
+		proxy.mu.Unlock()
+	}
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
@@ -187,7 +238,7 @@ func (proxy *xcodeProxy) callTool(ctx context.Context, name string, args map[str
 		return nil, fmt.Errorf("xcode tool error: %w", err)
 	}
 
-	// Connection lost — attempt one reconnect.
+	// Connection lost — attempt reconnect.
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 
@@ -249,53 +300,53 @@ func autoAllowXcodeDialog(ctx context.Context) {
 	}
 }
 
-// clickXcodeAllowButton looks for an "Allow" button in an Xcode dialog
-// window and clicks it. The MCP permission prompt appears as an AXWindow
-// with subrole AXDialog containing "Allow" and "Don't Allow" buttons.
+// clickXcodeAllowButton looks for an "Allow" button in an Xcode MCP
+// permission dialog and clicks it. The dialog may appear as an AXSheet,
+// AXDialog, or standard AXWindow depending on the Xcode version. We search
+// all Xcode windows for a button titled "Allow" that sits alongside a
+// "Don't Allow" button to avoid false positives.
 func clickXcodeAllowButton() bool {
 	app, err := axuiautomation.NewApplication("com.apple.dt.Xcode")
 	if err != nil {
+		slog.Debug("clickXcodeAllowButton: cannot open Xcode AX", "err", err)
 		return false
 	}
 	defer app.Close()
 
-	// The permission dialog is an AXWindow with subrole AXDialog.
-	for _, win := range app.Windows().AllElements() {
-		if win.Subrole() != "AXDialog" {
+	// Use WindowList (AXWindows attribute) which is more reliable than
+	// the element query traversal used by Windows().
+	windows := app.WindowList()
+	if len(windows) == 0 {
+		// Fallback to query-based enumeration.
+		windows = app.Windows().AllElements()
+	}
+	slog.Debug("clickXcodeAllowButton: scanning windows", "count", len(windows))
+
+	for _, win := range windows {
+		// Enumerate buttons once per window.
+		allButtons := win.Descendants().WithLimit(100).ByRole("AXButton").AllElements()
+
+		// Look for an "Allow" button and a "Don't Allow" button.
+		// Use substring matching for "Don't Allow" because Xcode uses a
+		// curly apostrophe (U+2019) that doesn't match a straight quote.
+		var allow, dontAllow *axuiautomation.Element
+		for _, btn := range allButtons {
+			t := btn.Title()
+			if t == "Allow" {
+				allow = btn
+			} else if strings.Contains(t, "Allow") && strings.Contains(t, "Don") {
+				dontAllow = btn
+			}
+		}
+		if allow == nil || dontAllow == nil {
 			continue
 		}
-		btn := win.Buttons().ByTitle("Allow").First()
-		if btn != nil {
-			slog.Debug("clicking Xcode Allow button")
-			if err := btn.Click(); err == nil {
-				return true
-			}
+		slog.Debug("clicking Xcode Allow button", "window", win.Title(), "subrole", win.Subrole())
+		if err := allow.Click(); err == nil {
+			return true
 		}
 	}
 	return false
-}
-
-// drainXcodeAllowDialogs clicks all pending Allow buttons in Xcode for a
-// short window at startup, handling any dialogs that have built up from
-// previous launches.
-func drainXcodeAllowDialogs() {
-	slog.Debug("drainXcodeAllowDialogs: sweeping for queued Allow dialogs")
-	deadline := time.Now().Add(3 * time.Second)
-	clicked := 0
-	for time.Now().Before(deadline) {
-		if clickXcodeAllowButton() {
-			clicked++
-			slog.Info("dismissed queued Xcode Allow dialog", "total", clicked)
-			time.Sleep(300 * time.Millisecond) // let the next sheet appear
-		} else {
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
-	if clicked > 0 {
-		slog.Info("drainXcodeAllowDialogs: done", "dismissed", clicked)
-	} else {
-		slog.Debug("drainXcodeAllowDialogs: no queued dialogs found")
-	}
 }
 
 // registerBuildErrorResource registers a subscribable resource that exposes
