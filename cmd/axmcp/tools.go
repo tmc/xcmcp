@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/x/axuiautomation"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 func registerAXTools(s *mcp.Server) {
@@ -23,6 +24,7 @@ func registerAXTools(s *mcp.Server) {
 	registerAXType(s)
 	registerAXMenu(s)
 	registerAXFocus(s)
+	registerAXListWindows(s)
 	registerAXScreenshot(s)
 }
 
@@ -375,6 +377,29 @@ func registerAXMenu(s *mcp.Server) {
 	})
 }
 
+// ── ax_list_windows ───────────────────────────────────────────────────────────
+
+type axListWindowsInput struct {
+	App string `json:"app"`
+}
+
+func registerAXListWindows(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ax_list_windows",
+		Description: "List windows for an application by name or bundle ID. Returns window IDs, titles, and bounds.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axListWindowsInput) (*mcp.CallToolResult, any, error) {
+		windows, err := listAppWindows(args.App)
+		if err != nil {
+			return nil, nil, err
+		}
+		data, err := json.Marshal(windows)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal: %w", err)
+		}
+		return textResult(string(data)), nil, nil
+	})
+}
+
 // ── ax_screenshot ─────────────────────────────────────────────────────────────
 
 type axScreenshotInput struct {
@@ -435,50 +460,26 @@ func registerAXScreenshot(s *mcp.Server) {
 
 // captureElementOrWindow abstracts the logic to capture a screenshot.
 // If isElement is true, it attempts an element screenshot.
-// Otherwise it tries to use list-app-windows/screen-capture for a robust window capture.
+// Otherwise it tries ScreenCaptureKit for a robust window capture.
 func captureElementOrWindow(appName string, isElement bool, el *axuiautomation.Element) ([]byte, error) {
 	if !isElement {
-		// Try the external tools first for full windows
-		listCmd := exec.Command("list-app-windows", "-app", appName)
-		out, err := listCmd.Output()
-		if err == nil {
-			lines := strings.Split(string(out), "\n")
-			if len(lines) > 1 {
-				fields := strings.Fields(lines[1])
-				if len(fields) > 0 {
-					windowID := fields[0]
-
-					// Create a temp file for the screenshot
-					f, err := os.CreateTemp("", "ax-screenshot-*.png")
-					if err == nil {
-						f.Close()
-						defer os.Remove(f.Name())
-
-						captureCmd := exec.Command("screen-capture", "-window", windowID, "-output", f.Name())
-						if err := captureCmd.Run(); err == nil {
-							if png, err := os.ReadFile(f.Name()); err == nil {
-								return png, nil
-							}
-						}
-					}
-				}
+		// Try native SCK capture for full windows.
+		windows, err := listAppWindows(appName)
+		if err == nil && len(windows) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if png, err := captureWindowSCK(ctx, windows[0].WindowID); err == nil {
+				return png, nil
 			}
 		}
 	}
 
-	// Fallback to accessibility element screenshot
+	// Fallback to accessibility element screenshot.
 	png, err := el.Screenshot()
 	if err != nil {
 		if strings.Contains(err.Error(), "could not create image from rect") || strings.Contains(err.Error(), "screencapture: exit status") {
-			// Restore TCC "Open System Settings" missing prompt via AppleScript
-			go func() {
-				script := `display dialog "Screen Recording permission is required for axmcp to capture screenshots. Would you like to open System Settings?" buttons {"Cancel", "Open System Settings"} default button "Open System Settings"`
-				out, _ := exec.Command("osascript", "-e", script).Output()
-				if strings.Contains(string(out), "Open System Settings") {
-					exec.Command("open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture").Run()
-				}
-			}()
-			return nil, fmt.Errorf("screenshot failed: %w (Ensure Terminal/host has Screen Recording permissions in System Settings > Privacy & Security, and that the element is not fully occluded or off-screen)", err)
+			go ui.CheckScreenCapture()
+			return nil, fmt.Errorf("screenshot failed: %w (Screen Recording permission required — grant access in System Settings > Privacy & Security)", err)
 		}
 		return nil, fmt.Errorf("screenshot: %w", err)
 	}
