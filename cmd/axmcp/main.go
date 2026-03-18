@@ -44,6 +44,7 @@ func main() {
 		cfg = cfg.WithDebug()
 	}
 	cfg.BundleID = "dev.tmc.axmcp"
+	ui.ConfigureIdentity("axmcp", cfg.BundleID)
 
 	if err := macgo.Start(cfg); err != nil {
 		log.Fatalf("macgo start failed: %v", err)

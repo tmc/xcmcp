@@ -125,7 +125,7 @@ func (e *Element) Attributes() Attributes {
 func (e *Element) Screenshot() ([]byte, error) {
 	frame := e.getFrame()
 	if frame.Size.Width == 0 || frame.Size.Height == 0 {
-		return nil, fmt.Errorf("element has empty frame (likely missing Accessibility permissions for xcmcp.app or parent process)")
+		return nil, fmt.Errorf("element has empty frame (likely missing Accessibility permissions for %s.app or parent process)", uiExecName())
 	}
 
 	// screencapture -R x,y,w,h -t png <file>
@@ -160,6 +160,12 @@ var trustOnce sync.Once
 // transition. Call WaitForWindows before os.Exit to let animations finish.
 var activeWindows sync.WaitGroup
 
+var uiIdentity struct {
+	sync.RWMutex
+	appName  string
+	bundleID string
+}
+
 // WaitForWindows blocks until all permission windows have finished their
 // close animations. Call this before os.Exit to avoid cutting off the
 // green checkmark transition.
@@ -167,7 +173,38 @@ func WaitForWindows() {
 	activeWindows.Wait()
 }
 
+// ConfigureIdentity sets the app name and bundle identifier used for TCC
+// prompts and resets.
+func ConfigureIdentity(appName, bundleID string) {
+	uiIdentity.Lock()
+	defer uiIdentity.Unlock()
+	if appName != "" {
+		uiIdentity.appName = appName
+	}
+	if bundleID != "" {
+		uiIdentity.bundleID = bundleID
+	}
+}
+
+func configuredAppName() string {
+	uiIdentity.RLock()
+	defer uiIdentity.RUnlock()
+	return uiIdentity.appName
+}
+
+func configuredBundleID() string {
+	uiIdentity.RLock()
+	defer uiIdentity.RUnlock()
+	return uiIdentity.bundleID
+}
+
 func uiExecName() string {
+	if name := strings.TrimSpace(configuredAppName()); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(os.Getenv("MACGO_APP_NAME")); name != "" {
+		return name
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "xcmcp"
@@ -203,6 +240,12 @@ func waitForAccessibilityTrust(timeout time.Duration) bool {
 // uiBundleID reads CFBundleIdentifier from the running app bundle's Info.plist,
 // falling back to "dev.tmc.<execname>".
 func uiBundleID() string {
+	if id := strings.TrimSpace(configuredBundleID()); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(os.Getenv("MACGO_BUNDLE_ID")); id != "" {
+		return id
+	}
 	exe, err := os.Executable()
 	if err == nil {
 		plist := filepath.Join(filepath.Dir(filepath.Dir(exe)), "Info.plist")

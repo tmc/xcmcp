@@ -1,9 +1,18 @@
 package ui
 
 import (
+	"os"
 	"testing"
 	"time"
 )
+
+func resetIdentityForTest(t *testing.T) {
+	t.Helper()
+	uiIdentity.Lock()
+	defer uiIdentity.Unlock()
+	uiIdentity.appName = ""
+	uiIdentity.bundleID = ""
+}
 
 func TestWaitForAccessibilityTrust(t *testing.T) {
 	oldTrusted := axIsProcessTrusted
@@ -41,5 +50,30 @@ func TestWaitForAccessibilityTrustTimeout(t *testing.T) {
 
 	if waitForAccessibilityTrust(200 * time.Millisecond) {
 		t.Fatal("waitForAccessibilityTrust returned true, want false")
+	}
+}
+
+func TestConfigureIdentityOverridesFallbacks(t *testing.T) {
+	resetIdentityForTest(t)
+	t.Cleanup(func() {
+		resetIdentityForTest(t)
+		_ = os.Unsetenv("MACGO_APP_NAME")
+		_ = os.Unsetenv("MACGO_BUNDLE_ID")
+	})
+
+	if err := os.Setenv("MACGO_APP_NAME", "env-name"); err != nil {
+		t.Fatalf("Setenv(MACGO_APP_NAME): %v", err)
+	}
+	if err := os.Setenv("MACGO_BUNDLE_ID", "env.bundle"); err != nil {
+		t.Fatalf("Setenv(MACGO_BUNDLE_ID): %v", err)
+	}
+
+	ConfigureIdentity("axmcp", "dev.tmc.axmcp")
+
+	if got := uiExecName(); got != "axmcp" {
+		t.Fatalf("uiExecName() = %q, want %q", got, "axmcp")
+	}
+	if got := uiBundleID(); got != "dev.tmc.axmcp" {
+		t.Fatalf("uiBundleID() = %q, want %q", got, "dev.tmc.axmcp")
 	}
 }

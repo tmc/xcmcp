@@ -62,6 +62,7 @@ func main() {
 		WithPermissions(macgo.Accessibility).
 		WithAdHocSign()
 	cfg.BundleID = "dev.tmc.xcmcp"
+	ui.ConfigureIdentity("xcmcp", cfg.BundleID)
 	// ForceDirectExecution removed to allow Macgo to manage the App Bundle for TCC
 
 	if err := macgo.Start(cfg); err != nil {
