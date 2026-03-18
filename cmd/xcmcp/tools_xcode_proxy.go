@@ -25,8 +25,8 @@ type xcodeProxy struct {
 	client      *mcp.Client
 	session     *mcp.ClientSession
 	allowCancel context.CancelFunc // cancels the auto-allow dialog clicker
-	server      *mcp.Server       // for re-registering tools on reconnect
-	prefix      string            // tool name prefix for proxied tools
+	server      *mcp.Server        // for re-registering tools on reconnect
+	prefix      string             // tool name prefix for proxied tools
 }
 
 // newXcodeProxy starts xcrun mcpbridge as a child process, connects an MCP
@@ -109,10 +109,13 @@ func (proxy *xcodeProxy) discoverAndRegisterTools() (int, error) {
 		}
 
 		registered := &mcp.Tool{
-			Name:        name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-			Annotations: tool.Annotations,
+			Name:         name,
+			Description:  tool.Description,
+			InputSchema:  tool.InputSchema,
+			OutputSchema: tool.OutputSchema,
+			Annotations:  tool.Annotations,
+			Title:        tool.Title,
+			Icons:        tool.Icons,
 		}
 
 		// Capture the original tool name for the proxy call.

@@ -94,7 +94,12 @@ func main() {
 
 	// Create server options based on flags
 	serverOpts := &mcp.ServerOptions{
-		Logger: slog.Default(),
+		Instructions:      serverInstructions(*enableXcode || *xcodeOnly, *xcodeToolsPrefix),
+		Logger:            slog.Default(),
+		CompletionHandler: completionHandler,
+		RootsListChangedHandler: func(_ context.Context, req *mcp.RootsListChangedRequest) {
+			slog.Debug("client roots changed", "session", req.Session.ID())
+		},
 		Capabilities: &mcp.ServerCapabilities{
 			Tools: &mcp.ToolCapabilities{ListChanged: true},
 		},

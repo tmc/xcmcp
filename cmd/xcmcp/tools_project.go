@@ -21,9 +21,14 @@ type DiscoverProjectsOutput struct {
 func registerDiscoverProjects(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "discover_projects",
+		Title:       "Discover Projects",
 		Description: "Find all .xcodeproj and .xcworkspace files in a directory",
+		Annotations: readOnlyTool("Discover Projects"),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args DiscoverProjectsInput) (*mcp.CallToolResult, DiscoverProjectsOutput, error) {
 		path := args.Path
+		if path == "" {
+			path = sessionProjectRoot(ctx, req.Session, ".")
+		}
 		projects, err := project.Discover(path)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -61,9 +66,19 @@ type ListSchemesOutput struct {
 func registerListSchemes(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_schemes",
+		Title:       "List Schemes",
 		Description: "List available schemes for a project",
+		Annotations: readOnlyTool("List Schemes"),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args ListSchemesInput) (*mcp.CallToolResult, ListSchemesOutput, error) {
-		path := args.Path
+		path, err := inferProjectPath(ctx, req.Session, args.Path)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to infer project path: %v", err)},
+				},
+			}, ListSchemesOutput{Schemes: []string{}}, nil
+		}
 		p, err := project.Open(path)
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -103,9 +118,21 @@ type ShowBuildSettingsOutput struct {
 func registerShowBuildSettings(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "show_build_settings",
+		Title:       "Show Build Settings",
 		Description: "Get build settings for scheme/config",
+		Annotations: readOnlyTool("Show Build Settings"),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args ShowBuildSettingsInput) (*mcp.CallToolResult, ShowBuildSettingsOutput, error) {
-		p, err := project.Open(args.Path)
+		path, err := inferProjectPath(ctx, req.Session, args.Path)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to infer project path: %v", err)},
+				},
+			}, ShowBuildSettingsOutput{Settings: map[string]string{}}, nil
+		}
+
+		p, err := project.Open(path)
 		if err != nil {
 			return &mcp.CallToolResult{
 				IsError: true,
@@ -148,20 +175,23 @@ type BuildOutput struct {
 func registerBuild(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "build",
+		Title:       "Build",
 		Description: "Build an Xcode project or workspace",
+		Annotations: additiveTool("Build", false),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args BuildInput) (*mcp.CallToolResult, BuildOutput, error) {
-		if args.Project == "" && args.Workspace == "" {
+		projectPath, workspacePath, err := inferBuildLocator(ctx, req.Session, args.Project, args.Workspace)
+		if err != nil {
 			return &mcp.CallToolResult{
 				IsError: true,
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: "Either project or workspace must be specified"},
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to infer project or workspace: %v", err)},
 				},
 			}, BuildOutput{}, nil
 		}
 
 		result, err := xcodebuild.Build(ctx, xcodebuild.BuildOptions{
-			Project:       args.Project,
-			Workspace:     args.Workspace,
+			Project:       projectPath,
+			Workspace:     workspacePath,
 			Scheme:        args.Scheme,
 			Configuration: args.Configuration,
 			Destination:   args.Destination,
@@ -183,20 +213,23 @@ func registerBuild(s *mcp.Server) {
 func registerTest(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "test",
+		Title:       "Test",
 		Description: "Run tests for an Xcode project or workspace",
+		Annotations: additiveTool("Test", false),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args BuildInput) (*mcp.CallToolResult, BuildOutput, error) {
-		if args.Project == "" && args.Workspace == "" {
+		projectPath, workspacePath, err := inferBuildLocator(ctx, req.Session, args.Project, args.Workspace)
+		if err != nil {
 			return &mcp.CallToolResult{
 				IsError: true,
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: "Either project or workspace must be specified"},
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to infer project or workspace: %v", err)},
 				},
 			}, BuildOutput{}, nil
 		}
 
 		result, err := xcodebuild.Test(ctx, xcodebuild.BuildOptions{
-			Project:       args.Project,
-			Workspace:     args.Workspace,
+			Project:       projectPath,
+			Workspace:     workspacePath,
 			Scheme:        args.Scheme,
 			Configuration: args.Configuration,
 			Destination:   args.Destination,

@@ -12,23 +12,28 @@ const swiftUIPreviewPromptName = "swiftui_preview_block"
 func registerSwiftUIPreviewFeatures(s *mcp.Server) {
 	s.AddPrompt(&mcp.Prompt{
 		Name:        swiftUIPreviewPromptName,
+		Title:       "SwiftUI Preview Block",
 		Description: "Generate a SwiftUI #Preview block for a view source file",
 		Arguments: []*mcp.PromptArgument{
 			{
 				Name:        "path",
+				Title:       "Source Path",
 				Description: "Path to the Swift source file",
 				Required:    true,
 			},
 			{
 				Name:        "type_name",
+				Title:       "View Type",
 				Description: "Optional view type name if the file defines multiple views",
 			},
 			{
 				Name:        "notes",
+				Title:       "Notes",
 				Description: "Additional preview requirements",
 			},
 			{
 				Name:        "variants",
+				Title:       "Variants",
 				Description: "Comma-separated preview variants to cover",
 			},
 		},
