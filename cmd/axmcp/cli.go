@@ -13,15 +13,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/xcmcp/internal/ui"
+	"golang.org/x/sys/unix"
 )
 
 // isTTY reports whether stdin is an interactive terminal.
 func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TIOCGETA)
+	return err == nil
 }
 
 // runCLI runs the interactive CLI mode and does not return on success.
