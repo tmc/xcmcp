@@ -93,3 +93,33 @@ func TestConfigureIdentityOverridesFallbacks(t *testing.T) {
 		t.Fatalf("uiBundleID() = %q, want %q", got, "dev.tmc.axmcp")
 	}
 }
+
+func TestPrivacySettingsURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		service string
+		want    string
+	}{
+		{
+			name:    "accessibility",
+			service: "Accessibility",
+			want:    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+		},
+		{
+			name:    "screen capture",
+			service: "ScreenCapture",
+			want:    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+		},
+		{
+			name:    "fallback",
+			service: "Unknown",
+			want:    "x-apple.systempreferences:com.apple.preference.security",
+		},
+	}
+
+	for _, tt := range tests {
+		if got := uiPrivacySettingsURL(tt.service); got != tt.want {
+			t.Fatalf("%s: uiPrivacySettingsURL(%q) = %q, want %q", tt.name, tt.service, got, tt.want)
+		}
+	}
+}

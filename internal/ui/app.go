@@ -275,6 +275,26 @@ func uiRequestPermission() {
 	axIsProcessTrustedWithOptions(dict)
 }
 
+func uiPrivacySettingsURL(service string) string {
+	switch service {
+	case "Accessibility":
+		return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	case "ScreenCapture":
+		return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+	default:
+		return "x-apple.systempreferences:com.apple.preference.security"
+	}
+}
+
+func uiPreparePermissionRequest(win appkit.NSWindow, service string) {
+	win.OrderOut(nil)
+	app := appkit.GetNSApplicationClass().SharedApplication()
+	app.Hide(nil)
+	time.AfterFunc(150*time.Millisecond, func() {
+		exec.Command("open", uiPrivacySettingsURL(service)).Run()
+	})
+}
+
 func uiBindButtonAction(btn appkit.NSButton, fn func()) {
 	btn.SetActionHandler(fn)
 }
@@ -439,7 +459,7 @@ func showScreenRecordingPermissionWindow() {
 			Origin: corefoundation.CGPoint{X: primaryX, Y: btnY},
 			Size:   corefoundation.CGSize{Width: btnW, Height: btnH},
 		}, func() {
-			win.SetLevel(appkit.NormalWindowLevel)
+			uiPreparePermissionRequest(win, "ScreenCapture")
 			requestScreenCapture()
 		})
 		requestBtn.SetBezelStyle(appkit.NSBezelStylePush)
@@ -612,8 +632,7 @@ func showWaitingForPermissionWindow() {
 			Origin: corefoundation.CGPoint{X: primaryX, Y: btnY},
 			Size:   corefoundation.CGSize{Width: btnW, Height: btnH},
 		}, func() {
-			// Drop below the system TCC dialog before triggering it.
-			win.SetLevel(appkit.NormalWindowLevel)
+			uiPreparePermissionRequest(win, "Accessibility")
 			uiRequestPermission()
 		})
 		requestBtn.SetBezelStyle(appkit.NSBezelStylePush)
