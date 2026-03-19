@@ -40,8 +40,7 @@ func cfStringToGo(ref corefoundation.CFStringRef) string {
 }
 
 func makeCFString(s string) corefoundation.CFStringRef {
-	b := append([]byte(s), 0)
-	return corefoundation.CFStringCreateWithCString(0, &b[0], 0x08000100)
+	return corefoundation.CFStringCreateWithCString(0, s, 0x08000100)
 }
 
 // cfPointer converts a CF reference (stored as uintptr) to unsafe.Pointer
@@ -141,7 +140,7 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 
 	config := screencapturekit.NewSCStreamConfiguration()
 	frame := target.Frame()
-	config.SetWidth(uintptr(frame.Size.Width * 2))  // retina 2x
+	config.SetWidth(uintptr(frame.Size.Width * 2))   // retina 2x
 	config.SetHeight(uintptr(frame.Size.Height * 2)) // retina 2x
 
 	img, err := screencapturekit.GetSCScreenshotManagerClass().CaptureImageWithFilterConfiguration(ctx, &filter, &config)

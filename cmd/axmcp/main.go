@@ -22,6 +22,39 @@ import (
 
 var verbose = flag.Bool("v", false, "enable verbose debug logging")
 
+const (
+	permissionWaitTimeout  = 10 * time.Second
+	permissionPollInterval = 250 * time.Millisecond
+)
+
+func permissionPane(service string) string {
+	switch service {
+	case "Screen Recording":
+		return "Screen Recording"
+	default:
+		return service
+	}
+}
+
+func waitForPermission(service string, timeout, interval time.Duration, check func() bool) error {
+	if check() {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		if check() {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s permission not granted for axmcp.app; grant access in System Settings > Privacy & Security > %s", service, permissionPane(service))
+}
+
+func failPermission(err error) {
+	fmt.Fprintf(os.Stderr, "axmcp: %v\n", err)
+	os.Exit(1)
+}
+
 func main() {
 	// Handle -h/--help before macgo.Start to avoid app bundle relaunch.
 	for _, arg := range os.Args[1:] {
@@ -82,13 +115,13 @@ func main() {
 		// Run CLI in goroutine so main thread can drive the AppKit run loop.
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			for !ui.IsTrusted() {
-				time.Sleep(500 * time.Millisecond)
+			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
+				failPermission(err)
 			}
 			// Wait for Screen Recording if screenshotting.
 			if len(os.Args) >= 2 && os.Args[1] == "screenshot" {
-				for !ui.IsScreenRecordingTrusted() {
-					time.Sleep(500 * time.Millisecond)
+				if err := waitForPermission("Screen Recording", permissionWaitTimeout, permissionPollInterval, ui.IsScreenRecordingTrusted); err != nil {
+					failPermission(err)
 				}
 			}
 			runCLI()
@@ -97,6 +130,9 @@ func main() {
 	} else {
 		// Run MCP server in goroutine so main thread can drive the AppKit run loop.
 		go func() {
+			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
+				failPermission(err)
+			}
 			if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 				log.Printf("server error: %v", err)
 			}

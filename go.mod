@@ -6,7 +6,7 @@ require (
 	github.com/ebitengine/purego v0.10.0
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/spf13/cobra v1.10.2
-	github.com/tmc/apple v0.3.5
+	github.com/tmc/apple v0.4.0
 	github.com/tmc/macgo v0.1.0
 	golang.org/x/image v0.34.0
 )
