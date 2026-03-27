@@ -484,6 +484,11 @@ func registerAXScreenshot(s *mcp.Server) {
 // If isElement is true, it attempts an element screenshot.
 // Otherwise it tries ScreenCaptureKit for a robust window capture.
 func captureElementOrWindow(appName string, isElement bool, el *axuiautomation.Element) ([]byte, error) {
+	if !ui.IsScreenRecordingTrusted() {
+		go ui.CheckScreenCapture()
+		return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+	}
+
 	if !isElement {
 		// Try native SCK capture for full windows.
 		windows, err := listAppWindows(appName)
@@ -499,10 +504,6 @@ func captureElementOrWindow(appName string, isElement bool, el *axuiautomation.E
 	// Fallback to accessibility element screenshot.
 	png, err := el.Screenshot()
 	if err != nil {
-		if strings.Contains(err.Error(), "could not create image from rect") || strings.Contains(err.Error(), "screencapture: exit status") {
-			go ui.CheckScreenCapture()
-			return nil, fmt.Errorf("screenshot failed: %w (Screen Recording permission required — grant access in System Settings > Privacy & Security)", err)
-		}
 		return nil, fmt.Errorf("screenshot: %w", err)
 	}
 

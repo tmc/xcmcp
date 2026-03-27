@@ -16,7 +16,6 @@ import (
 	"github.com/tmc/apple/coregraphics"
 	"github.com/tmc/apple/dispatch"
 	"github.com/tmc/apple/objc"
-	"github.com/tmc/apple/screencapturekit"
 )
 
 // Manual AX Bindings
@@ -263,9 +262,6 @@ func uiBundleID() string {
 }
 
 func uiRequestPermission() {
-	// Reset stale TCC entry before re-prompting.
-	exec.Command("tccutil", "reset", "Accessibility", uiBundleID()).Run()
-
 	if axIsProcessTrustedWithOptions == nil {
 		return
 	}
@@ -273,6 +269,14 @@ func uiRequestPermission() {
 	val := objc.Send[uintptr](objc.ID(objc.GetClass("NSNumber")), objc.Sel("numberWithBool:"), true)
 	dict := objc.Send[uintptr](objc.ID(objc.GetClass("NSDictionary")), objc.Sel("dictionaryWithObject:forKey:"), val, key)
 	axIsProcessTrustedWithOptions(dict)
+}
+
+func requestAccessibilityPermissionAsync() {
+	go func() {
+		dispatch.MainQueue().Async(func() {
+			uiRequestPermission()
+		})
+	}()
 }
 
 func uiPrivacySettingsURL(service string) string {
@@ -286,13 +290,12 @@ func uiPrivacySettingsURL(service string) string {
 	}
 }
 
-func uiPreparePermissionRequest(win appkit.NSWindow, service string) {
-	win.OrderOut(nil)
-	app := appkit.GetNSApplicationClass().SharedApplication()
-	app.Hide(nil)
-	time.AfterFunc(150*time.Millisecond, func() {
-		exec.Command("open", uiPrivacySettingsURL(service)).Run()
-	})
+func uiPreparePermissionRequest(win appkit.NSWindow) {
+	// Keep the helper visible across activation changes while yielding
+	// activation so a system permission prompt can move in front of it.
+	win.SetHidesOnDeactivate(false)
+	win.SetLevel(appkit.NormalWindowLevel)
+	appkit.GetNSApplicationClass().SharedApplication().Deactivate()
 }
 
 func uiBindButtonAction(btn appkit.NSButton, fn func()) {
@@ -325,26 +328,31 @@ func CheckTrust() {
 	})
 }
 
-// IsScreenRecordingTrusted checks if screen recording permission is granted.
+// IsScreenRecordingTrusted checks if screen recording permission is granted
+// without triggering a system prompt.
 func IsScreenRecordingTrusted() bool {
-	scClass := screencapturekit.GetSCShareableContentClass()
-	done := make(chan bool)
-	handler := func(content *screencapturekit.SCShareableContent, err error) {
-		done <- content != nil && err == nil
-	}
-	scClass.GetShareableContentExcludingDesktopWindowsOnScreenWindowsOnlyCompletionHandler(true, true, handler)
-	select {
-	case result := <-done:
-		return result
-	case <-time.After(2 * time.Second):
-		return false
-	}
+	return coregraphics.CGPreflightScreenCaptureAccess()
 }
 
 func requestScreenCapture() {
-	// Reset stale TCC entry before re-prompting.
-	exec.Command("tccutil", "reset", "ScreenCapture", uiBundleID()).Run()
 	coregraphics.CGRequestScreenCaptureAccess()
+}
+
+func requestScreenCaptureAsync() {
+	go func() {
+		dispatch.MainQueue().Async(func() {
+			requestScreenCapture()
+		})
+	}()
+}
+
+// resetTCC clears stale TCC entries for the current bundle so the OS will
+// re-prompt. Must be called inside the .app bundle process.
+func resetTCC(service string) {
+	bid := uiBundleID()
+	cmd := exec.Command("tccutil", "reset", service, bid)
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }
 
 var screenCaptureOnce sync.Once
@@ -369,13 +377,13 @@ func showScreenRecordingPermissionWindow() {
 
 		const (
 			w       = 420.0
-			h       = 160.0
-			pad     = 20.0
-			iconSz  = 48.0
-			iconPad = 14.0
+			h       = 150.0
+			pad     = 16.0
+			iconSz  = 40.0
+			iconPad = 12.0
 			btnH    = 26.0
 			btnW    = 155.0
-			btnPadB = 14.0
+			btnPadB = 12.0
 		)
 
 		name := uiExecName()
@@ -388,7 +396,8 @@ func showScreenRecordingPermissionWindow() {
 			false,
 		)
 		win.SetTitle("")
-		win.SetLevel(appkit.ModalPanelWindowLevel)
+		win.SetLevel(appkit.FloatingWindowLevel)
+		win.SetHidesOnDeactivate(false)
 
 		content := appkit.NSViewFromID(win.ContentView().GetID())
 
@@ -414,9 +423,13 @@ func showScreenRecordingPermissionWindow() {
 			`"` + name + `.app" needs Screen Recording permission`,
 		)
 		titleLabel.SetFont(fontClass.BoldSystemFontOfSize(13))
+		titleLabel.SetUsesSingleLineMode(false)
+		titleLabel.SetLineBreakMode(appkit.NSLineBreakByWordWrapping)
+		titleLabel.SetMaximumNumberOfLines(2)
+		titleLabel.SetPreferredMaxLayoutWidth(textW)
 		titleLabel.SetFrame(corefoundation.CGRect{
-			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 20},
-			Size:   corefoundation.CGSize{Width: textW, Height: 20},
+			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 30},
+			Size:   corefoundation.CGSize{Width: textW, Height: 30},
 		})
 		content.AddSubview(titleLabel)
 
@@ -426,14 +439,14 @@ func showScreenRecordingPermissionWindow() {
 		)
 		bodyLabel.SetFont(fontClass.SystemFontOfSize(11))
 		bodyLabel.SetFrame(corefoundation.CGRect{
-			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 20 - 18},
-			Size:   corefoundation.CGSize{Width: textW, Height: 16},
+			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 46},
+			Size:   corefoundation.CGSize{Width: textW, Height: 14},
 		})
 		content.AddSubview(bodyLabel)
 
 		// Spinner — small, inline, indicates waiting.
 		spinSz := 14.0
-		spinY := h - pad - 20 - 18 - 24
+		spinY := h - pad - 66
 		spinner := appkit.NewProgressIndicatorWithFrame(corefoundation.CGRect{
 			Origin: corefoundation.CGPoint{X: textX, Y: spinY},
 			Size:   corefoundation.CGSize{Width: spinSz, Height: spinSz},
@@ -459,8 +472,10 @@ func showScreenRecordingPermissionWindow() {
 			Origin: corefoundation.CGPoint{X: primaryX, Y: btnY},
 			Size:   corefoundation.CGSize{Width: btnW, Height: btnH},
 		}, func() {
-			uiPreparePermissionRequest(win, "ScreenCapture")
-			requestScreenCapture()
+			uiPreparePermissionRequest(win)
+			// A normal request should not clear an existing TCC decision.
+			// Resetting here forces macOS to prompt again on every click.
+			requestScreenCaptureAsync()
 		})
 		requestBtn.SetBezelStyle(appkit.NSBezelStylePush)
 		requestBtn.SetKeyEquivalent("\r")
@@ -470,11 +485,28 @@ func showScreenRecordingPermissionWindow() {
 		win.MakeKeyAndOrderFront(nil)
 		app.Activate()
 
-		// Poll for trust on the main thread.
+		// Poll for trust on the main thread with timeout.
+		const pollTimeout = 120 * time.Second
+		startTime := time.Now()
 		var pollTimer *time.Timer
 		var poll func()
 		poll = func() {
+			elapsed := time.Since(startTime)
 			if !IsScreenRecordingTrusted() {
+				if elapsed >= pollTimeout {
+					waitLabel.SetStringValue("Timed out. Re-run to try again.")
+					spinner.StopAnimation(nil)
+					spinner.SetIsHidden(true)
+					time.AfterFunc(2*time.Second, func() {
+						dispatch.MainQueue().Async(func() {
+							win.Close()
+							activeWindows.Done()
+						})
+					})
+					return
+				}
+				secs := int(elapsed.Seconds())
+				waitLabel.SetStringValue(fmt.Sprintf("Waiting for permission… (%ds)", secs))
 				pollTimer = time.AfterFunc(500*time.Millisecond, func() {
 					dispatch.MainQueue().Async(poll)
 				})
@@ -542,13 +574,13 @@ func showWaitingForPermissionWindow() {
 
 		const (
 			w       = 420.0
-			h       = 160.0
-			pad     = 20.0
-			iconSz  = 48.0
-			iconPad = 14.0
+			h       = 150.0
+			pad     = 16.0
+			iconSz  = 40.0
+			iconPad = 12.0
 			btnH    = 26.0
 			btnW    = 155.0
-			btnPadB = 14.0
+			btnPadB = 12.0
 		)
 
 		name := uiExecName()
@@ -561,7 +593,8 @@ func showWaitingForPermissionWindow() {
 			false,
 		)
 		win.SetTitle("")
-		win.SetLevel(appkit.ModalPanelWindowLevel)
+		win.SetLevel(appkit.FloatingWindowLevel)
+		win.SetHidesOnDeactivate(false)
 
 		content := appkit.NSViewFromID(win.ContentView().GetID())
 
@@ -587,9 +620,13 @@ func showWaitingForPermissionWindow() {
 			`"` + name + `.app" needs Accessibility permission`,
 		)
 		titleLabel.SetFont(fontClass.BoldSystemFontOfSize(13))
+		titleLabel.SetUsesSingleLineMode(false)
+		titleLabel.SetLineBreakMode(appkit.NSLineBreakByWordWrapping)
+		titleLabel.SetMaximumNumberOfLines(2)
+		titleLabel.SetPreferredMaxLayoutWidth(textW)
 		titleLabel.SetFrame(corefoundation.CGRect{
-			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 20},
-			Size:   corefoundation.CGSize{Width: textW, Height: 20},
+			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 30},
+			Size:   corefoundation.CGSize{Width: textW, Height: 30},
 		})
 		content.AddSubview(titleLabel)
 
@@ -599,14 +636,14 @@ func showWaitingForPermissionWindow() {
 		)
 		bodyLabel.SetFont(fontClass.SystemFontOfSize(11))
 		bodyLabel.SetFrame(corefoundation.CGRect{
-			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 20 - 18},
-			Size:   corefoundation.CGSize{Width: textW, Height: 16},
+			Origin: corefoundation.CGPoint{X: textX, Y: h - pad - 46},
+			Size:   corefoundation.CGSize{Width: textW, Height: 14},
 		})
 		content.AddSubview(bodyLabel)
 
 		// Spinner — small, inline, indicates waiting.
 		spinSz := 14.0
-		spinY := h - pad - 20 - 18 - 24
+		spinY := h - pad - 66
 		spinner := appkit.NewProgressIndicatorWithFrame(corefoundation.CGRect{
 			Origin: corefoundation.CGPoint{X: textX, Y: spinY},
 			Size:   corefoundation.CGSize{Width: spinSz, Height: spinSz},
@@ -632,8 +669,10 @@ func showWaitingForPermissionWindow() {
 			Origin: corefoundation.CGPoint{X: primaryX, Y: btnY},
 			Size:   corefoundation.CGSize{Width: btnW, Height: btnH},
 		}, func() {
-			uiPreparePermissionRequest(win, "Accessibility")
-			uiRequestPermission()
+			uiPreparePermissionRequest(win)
+			// A normal request should not clear an existing TCC decision.
+			// Resetting here forces macOS to prompt again on every click.
+			requestAccessibilityPermissionAsync()
 		})
 		requestBtn.SetBezelStyle(appkit.NSBezelStylePush)
 		requestBtn.SetKeyEquivalent("\r")
@@ -643,11 +682,28 @@ func showWaitingForPermissionWindow() {
 		win.MakeKeyAndOrderFront(nil)
 		app.Activate()
 
-		// Poll for trust on the main thread.
+		// Poll for trust on the main thread with timeout.
+		const pollTimeout = 120 * time.Second
+		startTime := time.Now()
 		var pollTimer *time.Timer
 		var poll func()
 		poll = func() {
+			elapsed := time.Since(startTime)
 			if !uiIsTrustedFresh() {
+				if elapsed >= pollTimeout {
+					waitLabel.SetStringValue("Timed out. Re-run to try again.")
+					spinner.StopAnimation(nil)
+					spinner.SetIsHidden(true)
+					time.AfterFunc(2*time.Second, func() {
+						dispatch.MainQueue().Async(func() {
+							win.Close()
+							activeWindows.Done()
+						})
+					})
+					return
+				}
+				secs := int(elapsed.Seconds())
+				waitLabel.SetStringValue(fmt.Sprintf("Waiting for permission… (%ds)", secs))
 				pollTimer = time.AfterFunc(500*time.Millisecond, func() {
 					dispatch.MainQueue().Async(poll)
 				})
@@ -680,8 +736,6 @@ func showWaitingForPermissionWindow() {
 			checkImg := appkit.NSImageFromID(checkBase.ImageWithSymbolConfiguration(checkFinalCfg).GetID())
 			iconView.SetImage(checkImg)
 
-			// Center icon and label in the smaller window. Content height
-			// is successH minus the title bar (~28pt).
 			contentH := successH - 28.0
 			midY := contentH / 2.0
 			titleLabel.SetStringValue("Accessibility permission granted.")

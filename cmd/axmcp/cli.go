@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +29,9 @@ func runCLI() {
 		Use:   "axmcp",
 		Short: "Accessibility automation CLI (MCP server when stdin is not a TTY)",
 	}
+	// -v is handled early in main() before macgo; declare here so cobra
+	// doesn't reject it as an unknown flag.
+	root.PersistentFlags().BoolP("verbose", "v", false, "enable verbose debug logging")
 
 	root.AddCommand(
 		cliApps(),
@@ -368,6 +372,18 @@ func cliScreenshot() *cobra.Command {
 		Short: "Capture a screenshot of a window or element",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			verbose, _ := cmd.Flags().GetBool("verbose")
+			if verbose {
+				diagf("screenshot: checking screen recording permission\n")
+			}
+			if !ui.IsScreenRecordingTrusted() {
+				ui.CheckScreenCapture()
+				return fmt.Errorf("Screen Recording permission required — grant access in System Settings > Privacy & Security")
+			}
+
+			if verbose {
+				diagf("screenshot: opening %s\n", args[0])
+			}
 			axuiautomation.SpinRunLoop(200 * time.Millisecond)
 			app, err := spinAndOpen(args[0])
 			if err != nil {
@@ -375,13 +391,9 @@ func cliScreenshot() *cobra.Command {
 			}
 			defer app.Close()
 
-			fmt.Printf("[DEBUG] AXIsProcessTrusted: %v\n", axuiautomation.AXIsProcessTrusted())
-			fmt.Printf("[DEBUG] Connected to %s (PID: %d)\n", args[0], app.PID())
-			children := app.Root().Children()
-			fmt.Printf("[DEBUG] Root has %d children\n", len(children))
-
+			isElement := contains != "" || role != ""
 			var el *axuiautomation.Element
-			if contains != "" || role != "" {
+			if isElement {
 				q := app.Descendants().WithLimit(100)
 				if role != "" {
 					q = q.ByRole(role)
@@ -395,31 +407,56 @@ func cliScreenshot() *cobra.Command {
 				}
 			} else {
 				wins := app.WindowList()
-				fmt.Printf("[DEBUG] Found %d windows via WindowList()\n", len(wins))
-				if len(wins) == 0 {
-					return fmt.Errorf("no windows found")
+				if verbose {
+					diagf("screenshot: found %d AX windows\n", len(wins))
 				}
-				el = wins[0]
+				if len(wins) > 0 {
+					el = wins[0]
+				}
 			}
 
-			png, err := captureElementOrWindow(args[0], contains != "" || role != "", el)
+			// If no AX element, try CGWindowList + SCK capture directly.
+			if el == nil {
+				if verbose {
+					diagf("screenshot: no AX element, trying CGWindowList\n")
+				}
+				windows, err := listAppWindows(args[0])
+				if err != nil || len(windows) == 0 {
+					return fmt.Errorf("no windows found for %q", args[0])
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				png, err := captureWindowSCK(ctx, windows[0].WindowID)
+				if err != nil {
+					return fmt.Errorf("screenshot: %w", err)
+				}
+				return writeScreenshot(out, png)
+			}
+
+			if verbose {
+				diagf("screenshot: capturing element/window\n")
+			}
+			png, err := captureElementOrWindow(args[0], isElement, el)
 			if err != nil {
 				return err
 			}
-
-			dest := out
-			if dest == "" {
-				dest = "screenshot-" + strconv.FormatInt(time.Now().Unix(), 10) + ".png"
-			}
-			if err := os.WriteFile(dest, png, 0644); err != nil {
-				return err
-			}
-			fmt.Println("saved:", dest)
-			return nil
+			return writeScreenshot(out, png)
 		},
 	}
 	cmd.Flags().StringVar(&contains, "contains", "", "element title substring")
 	cmd.Flags().StringVar(&role, "role", "", "AX role filter")
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file (default: screenshot-<unix>.png)")
 	return cmd
+}
+
+func writeScreenshot(out string, png []byte) error {
+	dest := out
+	if dest == "" {
+		dest = "screenshot-" + strconv.FormatInt(time.Now().Unix(), 10) + ".png"
+	}
+	if err := os.WriteFile(dest, png, 0644); err != nil {
+		return err
+	}
+	fmt.Println("saved:", dest)
+	return nil
 }
