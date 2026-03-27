@@ -105,6 +105,11 @@ func addXcodeBridgeToolset(prefix string, subscribeBuildErrors bool, wait bool) 
 
 			registerXcodeTargetTools(s)
 
+			if !xcodeBridgeAvailable() {
+				slog.Info("xcode bridge unavailable; starting without Xcode bridge tools")
+				return
+			}
+
 			// Wait for Accessibility trust before attempting to auto-allow
 			// the Xcode MCP permission dialog. Without AX permission, the
 			// auto-clicker cannot interact with Xcode's UI.

@@ -17,6 +17,10 @@ import (
 	"github.com/tmc/apple/x/axuiautomation"
 )
 
+const xcodeToolDiscoveryTimeout = 10 * time.Second
+
+var hasRunningXcodeProcess = detectRunningXcodeProcess
+
 // xcodeProxy manages a child mcpbridge process and client session.
 // It automatically reconnects when the connection is lost (e.g. Xcode killed)
 // and re-discovers tools from the new session.
@@ -71,6 +75,19 @@ func newXcodeProxy(ctx context.Context) (*xcodeProxy, error) {
 	}, nil
 }
 
+func xcodeBridgeAvailable() bool {
+	return shouldAttemptXcodeBridge(os.Getenv("MCP_XCODE_PID"), hasRunningXcodeProcess())
+}
+
+func shouldAttemptXcodeBridge(mcpXcodePID string, hasRunningXcode bool) bool {
+	return mcpXcodePID != "" || hasRunningXcode
+}
+
+func detectRunningXcodeProcess() bool {
+	cmd := exec.Command("pgrep", "-x", "Xcode")
+	return cmd.Run() == nil
+}
+
 // registerXcodeTools discovers tools from the mcpbridge session and registers
 // each one as a proxy tool on the server. The prefix, if non-empty, is
 // prepended to each tool name with an underscore separator.
@@ -89,7 +106,8 @@ func registerXcodeTools(s *mcp.Server, proxy *xcodeProxy, prefix string) (int, e
 // discoverAndRegisterTools enumerates tools from the current mcpbridge
 // session and registers (or re-registers) each as a proxy tool.
 func (proxy *xcodeProxy) discoverAndRegisterTools() (int, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), xcodeToolDiscoveryTimeout)
+	defer cancel()
 	n := 0
 	for tool, err := range proxy.session.Tools(ctx, nil) {
 		if err != nil {
