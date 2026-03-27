@@ -26,6 +26,8 @@ func registerAXTools(s *mcp.Server) {
 	registerAXFocus(s)
 	registerAXListWindows(s)
 	registerAXScreenshot(s)
+	registerAXInteractionTools(s)
+	registerAXWindowTools(s)
 }
 
 // openApp opens an application by bundle ID or numeric PID string.
