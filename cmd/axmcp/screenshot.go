@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/apple/corefoundation"
 	"github.com/tmc/apple/coregraphics"
 	"github.com/tmc/apple/screencapturekit"
+	"github.com/tmc/xcmcp/internal/ui"
 )
 
 type windowInfo struct {
@@ -120,14 +122,24 @@ func listAppWindows(appIdentifier string) ([]windowInfo, error) {
 
 // captureWindowSCK captures a window screenshot using ScreenCaptureKit.
 func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
+	diagf("captureWindowSCK: start windowID=%d\n", windowID)
+
+	diagf("captureWindowSCK: calling GetShareableContent\n")
+	t0 := time.Now()
 	content, err := screencapturekit.GetSCShareableContentClass().GetShareableContent(ctx)
+	diagf("captureWindowSCK: GetShareableContent returned elapsed=%v err=%v\n", time.Since(t0), err)
 	if err != nil {
 		return nil, fmt.Errorf("get shareable content: %w", err)
 	}
 
+	diagf("captureWindowSCK: getting windows list\n")
+	windows := content.Windows()
+	diagf("captureWindowSCK: got %d windows\n", len(windows))
 	var target screencapturekit.SCWindow
-	for _, w := range content.Windows() {
-		if w.WindowID() == windowID {
+	for i, w := range windows {
+		wid := w.WindowID()
+		diagf("captureWindowSCK: window[%d] id=%d\n", i, wid)
+		if wid == windowID {
 			target = w
 			break
 		}
@@ -135,6 +147,7 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	if target.GetID() == 0 {
 		return nil, fmt.Errorf("window %d not found in shareable content", windowID)
 	}
+	diagf("captureWindowSCK: found target window\n")
 
 	filter := screencapturekit.NewContentFilterWithDesktopIndependentWindow(&target)
 
@@ -143,9 +156,50 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	config.SetWidth(uintptr(frame.Size.Width * 2))   // retina 2x
 	config.SetHeight(uintptr(frame.Size.Height * 2)) // retina 2x
 
+	diagf("captureWindowSCK: calling CaptureImage %.0fx%.0f\n", frame.Size.Width*2, frame.Size.Height*2)
+	t1 := time.Now()
 	img, err := screencapturekit.GetSCScreenshotManagerClass().CaptureImageWithFilterConfiguration(ctx, &filter, &config)
+	diagf("captureWindowSCK: CaptureImage returned elapsed=%v err=%v img=%v\n", time.Since(t1), err, img)
 	if err != nil {
 		return nil, fmt.Errorf("capture image: %w", err)
+	}
+	defer coregraphics.CGImageRelease(img)
+
+	diagf("captureWindowSCK: converting to PNG\n")
+	return cgImageToPNG(img)
+}
+
+// captureFullScreen captures the entire main display using ScreenCaptureKit.
+// Requires explicit opt-in because the resulting image is large.
+func captureFullScreen() ([]byte, error) {
+	if !ui.IsScreenRecordingTrusted() {
+		if !ui.WaitForScreenRecording(30 * time.Second) {
+			return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	content, err := screencapturekit.GetSCShareableContentClass().GetShareableContent(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get shareable content: %w", err)
+	}
+
+	displays := content.Displays()
+	if len(displays) == 0 {
+		return nil, fmt.Errorf("no displays found")
+	}
+
+	display := displays[0]
+	filter := screencapturekit.NewContentFilterWithDisplayExcludingWindows(&display, nil)
+	config := screencapturekit.NewSCStreamConfiguration()
+	config.SetWidth(uintptr(display.Width() * 2))
+	config.SetHeight(uintptr(display.Height() * 2))
+
+	img, err := screencapturekit.GetSCScreenshotManagerClass().CaptureImageWithFilterConfiguration(ctx, &filter, &config)
+	if err != nil {
+		return nil, fmt.Errorf("capture display: %w", err)
 	}
 	defer coregraphics.CGImageRelease(img)
 

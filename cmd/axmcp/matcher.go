@@ -87,7 +87,7 @@ func collectSnapshots(root *axuiautomation.Element, limit int) []elementSnapshot
 		return nil
 	}
 	if limit <= 0 {
-		limit = 200
+		limit = 500
 	}
 
 	type queueItem struct {

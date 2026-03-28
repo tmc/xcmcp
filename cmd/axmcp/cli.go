@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -150,7 +149,7 @@ func cliFind() *cobra.Command {
 			}
 			defer app.Close()
 			if limit <= 0 {
-				limit = 50
+				limit = 500
 			}
 			result := findElements(app.Root(), searchOptions{
 				Role:     role,
@@ -243,13 +242,13 @@ func cliClick() *cobra.Command {
 			result := findElements(app.Root(), searchOptions{
 				Role:     role,
 				Contains: args[1],
-				Limit:    100,
+				Limit:    500,
 			})
 			if len(result.matches) == 0 {
 				return fmt.Errorf("%s", noMatchMessage(result))
 			}
 			match := result.matches[0]
-			resolution := resolveClickTarget(match, 50)
+			resolution := resolveClickTarget(match, 500)
 			el := resolution.target.element
 			if el == nil {
 				return fmt.Errorf("click target disappeared: %s", formatMatch(match))
@@ -286,7 +285,7 @@ func cliType() *cobra.Command {
 			defer app.Close()
 			result := findElements(app.Root(), searchOptions{
 				Contains: args[1],
-				Limit:    100,
+				Limit:    500,
 			})
 			if len(result.matches) == 0 {
 				return fmt.Errorf("%s", noMatchMessage(result))
@@ -372,18 +371,28 @@ func cliScreenshot() *cobra.Command {
 		Short: "Capture a screenshot of a window or element",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			verbose, _ := cmd.Flags().GetBool("verbose")
-			if verbose {
-				diagf("screenshot: checking screen recording permission\n")
-			}
+			diagf("screenshot: checking screen recording permission\n")
 			if !ui.IsScreenRecordingTrusted() {
 				ui.CheckScreenCapture()
 				return fmt.Errorf("Screen Recording permission required — grant access in System Settings > Privacy & Security")
 			}
 
-			if verbose {
-				diagf("screenshot: opening %s\n", args[0])
+			isElement := contains != "" || role != ""
+
+			// For full-window screenshots, try CGWindowList + SCK first.
+			// This avoids AX IPC entirely, which can hang on apps with
+			// unresponsive accessibility implementations (e.g. VM windows).
+			if !isElement {
+				diagf("screenshot: trying CGWindowList + SCK (no AX)\n")
+				png, err := captureWindowByName(args[0])
+				if err == nil {
+					diagf("screenshot: SCK success, writing output\n")
+					return writeScreenshot(out, png)
+				}
+				diagf("screenshot: SCK capture failed: %v, falling back to AX\n", err)
 			}
+
+			diagf("screenshot: opening %s via AX\n", args[0])
 			axuiautomation.SpinRunLoop(200 * time.Millisecond)
 			app, err := spinAndOpen(args[0])
 			if err != nil {
@@ -391,7 +400,6 @@ func cliScreenshot() *cobra.Command {
 			}
 			defer app.Close()
 
-			isElement := contains != "" || role != ""
 			var el *axuiautomation.Element
 			if isElement {
 				q := app.Descendants().WithLimit(100)
@@ -407,35 +415,17 @@ func cliScreenshot() *cobra.Command {
 				}
 			} else {
 				wins := app.WindowList()
-				if verbose {
-					diagf("screenshot: found %d AX windows\n", len(wins))
-				}
+				diagf("screenshot: found %d AX windows\n", len(wins))
 				if len(wins) > 0 {
 					el = wins[0]
 				}
 			}
 
-			// If no AX element, try CGWindowList + SCK capture directly.
 			if el == nil {
-				if verbose {
-					diagf("screenshot: no AX element, trying CGWindowList\n")
-				}
-				windows, err := listAppWindows(args[0])
-				if err != nil || len(windows) == 0 {
-					return fmt.Errorf("no windows found for %q", args[0])
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				png, err := captureWindowSCK(ctx, windows[0].WindowID)
-				if err != nil {
-					return fmt.Errorf("screenshot: %w", err)
-				}
-				return writeScreenshot(out, png)
+				return fmt.Errorf("no windows found for %q", args[0])
 			}
 
-			if verbose {
-				diagf("screenshot: capturing element/window\n")
-			}
+			diagf("screenshot: capturing element/window\n")
 			png, err := captureElementOrWindow(args[0], isElement, el)
 			if err != nil {
 				return err

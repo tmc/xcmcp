@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
+	"github.com/tmc/apple/foundation"
 	"github.com/tmc/macgo"
 	"github.com/tmc/xcmcp/internal/ui"
 )
@@ -111,6 +112,8 @@ func main() {
 		WithAppName("axmcp").
 		WithPermissions(macgo.Accessibility, macgo.ScreenRecording).
 		WithUsageDescription("NSScreenCaptureUsageDescription", "axmcp needs to capture screenshots of specific UI elements and windows.").
+		WithInfo("NSSupportsAutomaticTermination", false).
+		WithUIMode(macgo.UIModeAccessory).
 		WithAdHocSign()
 	if verbose {
 		cfg = cfg.WithDebug()
@@ -136,6 +139,13 @@ func main() {
 	// Initialize AppKit — required for NSWindow, buttons, and DispatchMainSafe.
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
+	// Prevent AppKit from automatically terminating the process when no
+	// windows are open. Without this, the CLI and MCP server modes get
+	// killed by the automatic termination subsystem after a brief timeout.
+	procInfo := foundation.GetProcessInfoClass().ProcessInfo()
+	procInfo.SetAutomaticTerminationSupportEnabled(false)
+	procInfo.DisableAutomaticTermination("axmcp server")
+
 	ui.CheckTrust()
 
 	// Only check screen recording eagerly for the CLI screenshot subcommand.
@@ -147,22 +157,34 @@ func main() {
 	if isTTY() || len(os.Args) > 1 {
 		// Run CLI in goroutine so main thread can drive the AppKit run loop.
 		go func() {
-			time.Sleep(100 * time.Millisecond)
+			diagf("axmcp: CLI goroutine started\n")
+			time.Sleep(500 * time.Millisecond)
+			// Re-disable automatic termination after AppKit startup completes.
+			// AppKit's window restoration re-enables it during app.Run() init.
+			procInfo.SetAutomaticTerminationSupportEnabled(false)
+			procInfo.DisableAutomaticTermination("axmcp cli")
+			diagf("axmcp: auto-termination disabled\n")
 			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
 				failPermission(err)
 			}
 			// Wait for Screen Recording if screenshotting.
 			if hasArg("screenshot") {
+				diagf("axmcp: checking screen recording\n")
 				if err := waitForPermission("Screen Recording", permissionWaitTimeout, permissionPollInterval, ui.IsScreenRecordingTrusted); err != nil {
 					failPermission(err)
 				}
+				diagf("axmcp: screen recording OK\n")
 			}
+			diagf("axmcp: running CLI\n")
 			runCLI()
 			// runCLI calls os.Exit on completion, so this goroutine won't return
 		}()
 	} else {
 		// Run MCP server in goroutine so main thread can drive the AppKit run loop.
 		go func() {
+			time.Sleep(100 * time.Millisecond)
+			procInfo.SetAutomaticTerminationSupportEnabled(false)
+			procInfo.DisableAutomaticTermination("axmcp server goroutine")
 			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
 				failPermission(err)
 			}
@@ -176,6 +198,8 @@ func main() {
 
 	// Run the AppKit event loop on the main thread. This drains CFRunLoop,
 	// the GCD main queue, and AppKit UI events (buttons, windows, etc.).
+	diagf("axmcp: starting app.Run()\n")
 	app.Run()
+	diagf("axmcp: app.Run() returned — this should not happen\n")
 	_ = 42
 }

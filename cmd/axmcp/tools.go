@@ -5,15 +5,54 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ebitengine/purego"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/xcmcp/internal/ui"
 )
+
+// axTimeout is the AX messaging timeout applied to all opened apps.
+// If an app's accessibility implementation doesn't respond within this
+// duration, AX calls return kAXErrorCannotComplete instead of hanging.
+const axTimeout = 5 // seconds
+
+var (
+	axSetMessagingTimeout     func(element uintptr, timeoutInSeconds float32) int32
+	axSetMessagingTimeoutOnce sync.Once
+)
+
+func initAXSetMessagingTimeout() {
+	axSetMessagingTimeoutOnce.Do(func() {
+		lib, err := purego.Dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", purego.RTLD_LAZY|purego.RTLD_GLOBAL)
+		if err != nil {
+			slog.Warn("failed to load ApplicationServices for AXUIElementSetMessagingTimeout", "err", err)
+			return
+		}
+		purego.RegisterLibFunc(&axSetMessagingTimeout, lib, "AXUIElementSetMessagingTimeout")
+	})
+}
+
+// setAXTimeout sets the messaging timeout on an AX element so that
+// AXUIElementCopyAttributeValue returns kAXErrorCannotComplete instead
+// of blocking indefinitely on unresponsive apps.
+func setAXTimeout(app *axuiautomation.Application) {
+	initAXSetMessagingTimeout()
+	if axSetMessagingTimeout == nil {
+		return
+	}
+	root := app.Root()
+	if root == nil {
+		return
+	}
+	axSetMessagingTimeout(root.Ref(), axTimeout)
+}
 
 func registerAXTools(s *mcp.Server) {
 	registerAXApps(s)
@@ -42,12 +81,14 @@ func openApp(arg string) (*axuiautomation.Application, error) {
 	return axuiautomation.NewApplication(arg)
 }
 
-// spinAndOpen opens an app and spins the run loop to prime AX IPC.
+// spinAndOpen opens an app, sets an AX messaging timeout, and spins
+// the run loop to prime AX IPC.
 func spinAndOpen(arg string) (*axuiautomation.Application, error) {
 	app, err := openApp(arg)
 	if err != nil {
 		return nil, err
 	}
+	setAXTimeout(app)
 	axuiautomation.SpinRunLoop(200 * time.Millisecond)
 	return app, nil
 }
@@ -189,7 +230,7 @@ func registerAXFind(s *mcp.Server) {
 
 		limit := args.Limit
 		if limit <= 0 {
-			limit = 50
+			limit = 500
 		}
 		result := findElements(app.Root(), searchOptions{
 			Role:     args.Role,
@@ -281,14 +322,14 @@ func registerAXClick(s *mcp.Server) {
 		result := findElements(app.Root(), searchOptions{
 			Role:     args.Role,
 			Contains: args.Contains,
-			Limit:    100,
+			Limit:    500,
 		})
 		if len(result.matches) == 0 {
 			return nil, nil, fmt.Errorf("%s", noMatchMessage(result))
 		}
 
 		match := result.matches[0]
-		resolution := resolveClickTarget(match, 50)
+		resolution := resolveClickTarget(match, 500)
 		target := resolution.target.element
 		if target == nil {
 			return nil, nil, fmt.Errorf("click target disappeared: %s", formatMatch(match))
@@ -354,7 +395,7 @@ func registerAXType(s *mcp.Server) {
 
 		result := findElements(app.Root(), searchOptions{
 			Contains: args.Contains,
-			Limit:    100,
+			Limit:    500,
 		})
 		if len(result.matches) == 0 {
 			return nil, nil, fmt.Errorf("%s", noMatchMessage(result))
@@ -429,34 +470,48 @@ func registerAXListWindows(s *mcp.Server) {
 // ── ax_screenshot ─────────────────────────────────────────────────────────────
 
 type axScreenshotInput struct {
-	App      string `json:"app"`
-	Contains string `json:"contains,omitempty"`
-	Role     string `json:"role,omitempty"`
+	App        string `json:"app"`
+	Contains   string `json:"contains,omitempty"`
+	Role       string `json:"role,omitempty"`
+	FullScreen bool   `json:"full_screen,omitempty"`
 }
 
 func registerAXScreenshot(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ax_screenshot",
-		Description: "Capture a screenshot of an app window or specific element. Omit contains/role to capture the first window.",
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args axScreenshotInput) (*mcp.CallToolResult, any, error) {
-		app, err := spinAndOpen(args.App)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer app.Close()
+		Name: "ax_screenshot",
+		Description: `Capture a screenshot of an app window or specific element.
 
-		var el *axuiautomation.Element
+Prefer targeting a specific element with contains/role for smaller, faster, more token-efficient results. Full app window captures are larger and should only be used when you need to see the complete window layout.
+
+Set full_screen=true to capture the entire display (requires explicit opt-in due to large image size).`,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axScreenshotInput) (*mcp.CallToolResult, any, error) {
+		if args.FullScreen {
+			png, err := captureFullScreen()
+			if err != nil {
+				return nil, nil, err
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.ImageContent{Data: png, MIMEType: "image/png"}},
+			}, nil, nil
+		}
+
 		if args.Contains != "" || args.Role != "" {
+			// Element screenshot: need AX to find the element.
+			app, err := spinAndOpen(args.App)
+			if err != nil {
+				return nil, nil, err
+			}
+			defer app.Close()
+
 			result := findElements(app.Root(), searchOptions{
 				Role:     args.Role,
 				Contains: args.Contains,
-				Limit:    100,
+				Limit:    500,
 			})
 			if len(result.matches) == 0 {
 				return nil, nil, fmt.Errorf("%s", noMatchMessage(result))
 			}
-			el = result.matches[0].snapshot.element
-			// Capture specific element
+			el := result.matches[0].snapshot.element
 			png, err := captureElementOrWindow(args.App, true, el)
 			if err != nil {
 				return nil, nil, err
@@ -464,51 +519,91 @@ func registerAXScreenshot(s *mcp.Server) {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.ImageContent{Data: png, MIMEType: "image/png"}},
 			}, nil, nil
-		} else {
-			wins := app.WindowList()
-			if len(wins) == 0 {
-				return nil, nil, fmt.Errorf("no windows found to screenshot")
-			}
-			el = wins[0]
-			// Capture the whole window using screen-capture and list-app-windows
-			png, err := captureElementOrWindow(args.App, false, el)
-			if err != nil {
-				return nil, nil, err
-			}
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.ImageContent{Data: png, MIMEType: "image/png"}},
-			}, nil, nil
 		}
+
+		// Full window screenshot: try SCK/CGWindowList first (no AX IPC needed,
+		// avoids hanging on apps with unresponsive accessibility implementations).
+		png, err := captureWindowByName(args.App)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.ImageContent{Data: png, MIMEType: "image/png"}},
+		}, nil, nil
 	})
+}
+
+// captureWindowByName captures a full window screenshot using CGWindowList and
+// ScreenCaptureKit, without any AX IPC. This avoids hanging on apps whose
+// accessibility implementation is unresponsive (e.g. VM windows).
+func captureWindowByName(appName string) ([]byte, error) {
+	diagf("captureWindowByName: start app=%s\n", appName)
+
+	trusted := ui.IsScreenRecordingTrusted()
+	diagf("captureWindowByName: screen recording available=%v\n", trusted)
+	if !trusted {
+		diagf("captureWindowByName: waiting for screen recording permission\n")
+		if !ui.WaitForScreenRecording(30 * time.Second) {
+			return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+		}
+		diagf("captureWindowByName: screen recording granted\n")
+	}
+
+	diagf("captureWindowByName: listing windows\n")
+	windows, err := listAppWindows(appName)
+	if err != nil {
+		return nil, fmt.Errorf("no windows found for %q: %w", appName, err)
+	}
+	diagf("captureWindowByName: found %d windows, firstID=%d\n", len(windows), windows[0].WindowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t0 := time.Now()
+	png, err := captureWindowSCK(ctx, windows[0].WindowID)
+	if err != nil {
+		diagf("captureWindowByName: failed elapsed=%v err=%v\n", time.Since(t0), err)
+		return nil, fmt.Errorf("capture window %q (id=%d): %w", appName, windows[0].WindowID, err)
+	}
+	diagf("captureWindowByName: success, %d bytes\n", len(png))
+	return png, nil
 }
 
 // captureElementOrWindow abstracts the logic to capture a screenshot.
 // If isElement is true, it attempts an element screenshot.
 // Otherwise it tries ScreenCaptureKit for a robust window capture.
 func captureElementOrWindow(appName string, isElement bool, el *axuiautomation.Element) ([]byte, error) {
+	diagf("captureElementOrWindow: app=%s isElement=%v\n", appName, isElement)
 	if !ui.IsScreenRecordingTrusted() {
-		go ui.CheckScreenCapture()
-		return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+		diagf("captureElementOrWindow: waiting for screen recording\n")
+		if !ui.WaitForScreenRecording(30 * time.Second) {
+			return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+		}
 	}
 
 	if !isElement {
 		// Try native SCK capture for full windows.
 		windows, err := listAppWindows(appName)
 		if err == nil && len(windows) > 0 {
+			diagf("captureElementOrWindow: trying SCK capture windowID=%d\n", windows[0].WindowID)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if png, err := captureWindowSCK(ctx, windows[0].WindowID); err == nil {
+				diagf("captureElementOrWindow: SCK success %d bytes\n", len(png))
 				return png, nil
+			} else {
+				diagf("captureElementOrWindow: SCK failed: %v\n", err)
 			}
 		}
 	}
 
 	// Fallback to accessibility element screenshot.
+	diagf("captureElementOrWindow: falling back to AX element screenshot\n")
 	png, err := el.Screenshot()
 	if err != nil {
+		diagf("captureElementOrWindow: AX screenshot failed: %v\n", err)
 		return nil, fmt.Errorf("screenshot: %w", err)
 	}
-
+	diagf("captureElementOrWindow: AX screenshot success %d bytes\n", len(png))
 	return png, nil
 }
 
