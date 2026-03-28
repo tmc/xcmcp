@@ -533,21 +533,11 @@ Set full_screen=true to capture the entire display (requires explicit opt-in due
 	})
 }
 
-// captureWindowByName captures a full window screenshot using CGWindowList and
-// ScreenCaptureKit, without any AX IPC. This avoids hanging on apps whose
-// accessibility implementation is unresponsive (e.g. VM windows).
+// captureWindowByName captures a full window screenshot using CGWindowList,
+// without any AX IPC. This avoids hanging on apps whose accessibility
+// implementation is unresponsive (e.g. VM windows).
 func captureWindowByName(appName string) ([]byte, error) {
 	diagf("captureWindowByName: start app=%s\n", appName)
-
-	trusted := ui.IsScreenRecordingTrusted()
-	diagf("captureWindowByName: screen recording available=%v\n", trusted)
-	if !trusted {
-		diagf("captureWindowByName: waiting for screen recording permission\n")
-		if !ui.WaitForScreenRecording(30 * time.Second) {
-			return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
-		}
-		diagf("captureWindowByName: screen recording granted\n")
-	}
 
 	diagf("captureWindowByName: listing windows\n")
 	windows, err := listAppWindows(appName)
@@ -556,13 +546,23 @@ func captureWindowByName(appName string) ([]byte, error) {
 	}
 	diagf("captureWindowByName: found %d windows, firstID=%d\n", len(windows), windows[0].WindowID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	t0 := time.Now()
-	png, err := captureWindowSCK(ctx, windows[0].WindowID)
+	// Try CGWindowListCreateImage first — it runs synchronously and avoids
+	// the ScreenCaptureKit dispatch-to-main-thread issue that kills the process.
+	png, err := captureWindowCG(windows[0].WindowID)
 	if err != nil {
-		diagf("captureWindowByName: failed elapsed=%v err=%v\n", time.Since(t0), err)
-		return nil, fmt.Errorf("capture window %q (id=%d): %w", appName, windows[0].WindowID, err)
+		diagf("captureWindowByName: CG failed: %v, trying SCK\n", err)
+		// Screen Recording permission is required for SCK.
+		if !ui.IsScreenRecordingTrusted() {
+			if !ui.WaitForScreenRecording(30 * time.Second) {
+				return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		png, err = captureWindowSCK(ctx, windows[0].WindowID)
+		if err != nil {
+			return nil, fmt.Errorf("capture window %q (id=%d): %w", appName, windows[0].WindowID, err)
+		}
 	}
 	diagf("captureWindowByName: success, %d bytes\n", len(png))
 	return png, nil
@@ -581,10 +581,16 @@ func captureElementOrWindow(appName string, isElement bool, el *axuiautomation.E
 	}
 
 	if !isElement {
-		// Try native SCK capture for full windows.
+		// Try CGWindowListCreateImage for full windows (avoids SCK process
+		// termination issues). Fall back to SCK, then AX element capture.
 		windows, err := listAppWindows(appName)
 		if err == nil && len(windows) > 0 {
-			diagf("captureElementOrWindow: trying SCK capture windowID=%d\n", windows[0].WindowID)
+			diagf("captureElementOrWindow: trying CG capture windowID=%d\n", windows[0].WindowID)
+			if png, err := captureWindowCG(windows[0].WindowID); err == nil {
+				diagf("captureElementOrWindow: CG success %d bytes\n", len(png))
+				return png, nil
+			}
+			diagf("captureElementOrWindow: CG failed, trying SCK capture\n")
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if png, err := captureWindowSCK(ctx, windows[0].WindowID); err == nil {

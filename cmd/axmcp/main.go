@@ -15,21 +15,12 @@ import (
 	"runtime"
 	"time"
 
-	"sync/atomic"
-
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/macgo"
 	"github.com/tmc/xcmcp/internal/ui"
 )
-
-// blockTermination is set once the CLI or MCP server goroutine starts
-// real work. While set, applicationShouldTerminate returns
-// NSTerminateCancel to prevent AppKit from killing the process during
-// ScreenCaptureKit dispatch. It is left unset during TCC permission
-// granting so that "Quit & Reopen" dialogs work correctly.
-var blockTermination atomic.Bool
 
 // hasArg reports whether arg appears anywhere in os.Args[1:].
 func hasArg(arg string) bool {
@@ -78,6 +69,7 @@ func configureLogging(verbose bool) error {
 		return fmt.Errorf("open log file %s: %w", logPath, err)
 	}
 	diagnosticFile = f
+	setDiagFd(int(f.Fd()))
 	w := io.MultiWriter(os.Stderr, f)
 	diagnosticWriter = w
 	log.SetOutput(w)
@@ -122,6 +114,7 @@ func failPermission(err error) {
 }
 
 func main() {
+	installAtexitHandler()
 	runtime.LockOSThread()
 
 	verbose := hasArg("-v")
@@ -160,20 +153,13 @@ func main() {
 	// Initialize AppKit — required for NSWindow, buttons, and DispatchMainSafe.
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
-	// Set a delegate that prevents AppKit from terminating the process
-	// while work is in progress. During TCC permission granting,
-	// blockTermination is unset so "Quit & Reopen" dialogs work. Once
-	// the CLI or MCP server starts, it is set to prevent AppKit from
-	// calling exit(0) when frameworks like ScreenCaptureKit dispatch
-	// work to the main thread.
+	// Set a delegate that prevents AppKit from terminating the process.
+	// Without this, app.Run() calls exit(0) when ScreenCaptureKit
+	// dispatches work to the main thread.
 	delegate := appkit.NewNSApplicationDelegate(appkit.NSApplicationDelegateConfig{
 		ShouldTerminate: func(_ appkit.NSApplication) appkit.NSApplicationTerminateReply {
-			if blockTermination.Load() {
-				diagf("axmcp: applicationShouldTerminate — cancelling (work in progress)\n")
-				return appkit.NSTerminateCancel
-			}
-			diagf("axmcp: applicationShouldTerminate — allowing\n")
-			return appkit.NSTerminateNow
+			diagf("axmcp: applicationShouldTerminate — cancelling\n")
+			return appkit.NSTerminateCancel
 		},
 		ShouldTerminateAfterLastWindowClosed: func(_ appkit.NSApplication) bool {
 			return false
@@ -181,20 +167,22 @@ func main() {
 	})
 	app.SetDelegate(delegate)
 
-	// Prevent AppKit from automatically terminating the process when no
-	// windows are open. Without this, the CLI and MCP server modes get
-	// killed by the automatic termination subsystem after a brief timeout.
+	// Prevent AppKit from automatically or suddenly terminating the process.
+	// Without this, the CLI and MCP server modes get killed when
+	// ScreenCaptureKit dispatches work to the main thread.
 	procInfo := foundation.GetProcessInfoClass().ProcessInfo()
 	procInfo.SetAutomaticTerminationSupportEnabled(false)
 	procInfo.DisableAutomaticTermination("axmcp server")
+	procInfo.DisableSuddenTermination()
+
+	// BeginActivity prevents both sudden and automatic termination for
+	// the lifetime of the returned activity token.
+	_ = procInfo.BeginActivityWithOptionsReason(
+		foundation.NSActivitySuddenTerminationDisabled|foundation.NSActivityAutomaticTerminationDisabled,
+		"axmcp server",
+	)
 
 	ui.CheckTrust()
-
-	// Only check screen recording eagerly for the CLI screenshot subcommand.
-	// MCP server mode defers the check until a screenshot tool is actually called.
-	if hasArg("screenshot") {
-		ui.CheckScreenCapture()
-	}
 
 	if isTTY() || len(os.Args) > 1 {
 		// Run CLI in goroutine so main thread can drive the AppKit run loop.
@@ -209,15 +197,6 @@ func main() {
 			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
 				failPermission(err)
 			}
-			// Wait for Screen Recording if screenshotting.
-			if hasArg("screenshot") {
-				diagf("axmcp: checking screen recording\n")
-				if err := waitForPermission("Screen Recording", permissionWaitTimeout, permissionPollInterval, ui.IsScreenRecordingTrusted); err != nil {
-					failPermission(err)
-				}
-				diagf("axmcp: screen recording OK\n")
-			}
-			blockTermination.Store(true)
 			diagf("axmcp: running CLI\n")
 			runCLI()
 			// runCLI calls os.Exit on completion, so this goroutine won't return
@@ -231,7 +210,6 @@ func main() {
 			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
 				failPermission(err)
 			}
-			blockTermination.Store(true)
 			if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 				log.Printf("server error: %v", err)
 			}
@@ -242,8 +220,17 @@ func main() {
 
 	// Run the AppKit event loop on the main thread. This drains CFRunLoop,
 	// the GCD main queue, and AppKit UI events (buttons, windows, etc.).
-	diagf("axmcp: starting app.Run()\n")
-	app.Run()
-	diagf("axmcp: app.Run() returned — this should not happen\n")
-	_ = 42
+	// The delegate's ShouldTerminate returns NSTerminateCancel to prevent
+	// AppKit from calling exit(0) during ScreenCaptureKit dispatch.
+	//
+	// app.Run() can return if [NSApp stop:] is called (e.g. by
+	// ScreenCaptureKit internals during TCC validation). Re-enter the
+	// run loop when that happens so the process stays alive.
+	for {
+		diagf("axmcp: starting app.Run()\n")
+		flushDiagLog()
+		app.Run()
+		diagf("axmcp: app.Run() returned — re-entering run loop\n")
+		flushDiagLog()
+	}
 }

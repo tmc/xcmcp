@@ -371,25 +371,25 @@ func cliScreenshot() *cobra.Command {
 		Short: "Capture a screenshot of a window or element",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			isElement := contains != "" || role != ""
+
+			// For full-window screenshots, try CGWindowListCreateImage first.
+			// This runs synchronously and avoids the SCK dispatch issue.
+			if !isElement {
+				diagf("screenshot: trying CGWindowList capture (no AX)\n")
+				png, err := captureWindowByName(args[0])
+				if err == nil {
+					diagf("screenshot: capture success, writing output\n")
+					return writeScreenshot(out, png)
+				}
+				diagf("screenshot: capture failed: %v, falling back to AX\n", err)
+			}
+
+			// Screen Recording is required for the AX/SCK fallback paths.
 			diagf("screenshot: checking screen recording permission\n")
 			if !ui.IsScreenRecordingTrusted() {
 				ui.CheckScreenCapture()
 				return fmt.Errorf("Screen Recording permission required — grant access in System Settings > Privacy & Security")
-			}
-
-			isElement := contains != "" || role != ""
-
-			// For full-window screenshots, try CGWindowList + SCK first.
-			// This avoids AX IPC entirely, which can hang on apps with
-			// unresponsive accessibility implementations (e.g. VM windows).
-			if !isElement {
-				diagf("screenshot: trying CGWindowList + SCK (no AX)\n")
-				png, err := captureWindowByName(args[0])
-				if err == nil {
-					diagf("screenshot: SCK success, writing output\n")
-					return writeScreenshot(out, png)
-				}
-				diagf("screenshot: SCK capture failed: %v, falling back to AX\n", err)
 			}
 
 			diagf("screenshot: opening %s via AX\n", args[0])

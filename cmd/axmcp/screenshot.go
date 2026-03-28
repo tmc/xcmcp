@@ -121,32 +121,47 @@ func listAppWindows(appIdentifier string) ([]windowInfo, error) {
 	return windows, nil
 }
 
+// captureWindowCG captures a window screenshot using CGWindowListCreateImage.
+// This uses the legacy CoreGraphics API which runs synchronously on the calling
+// thread, avoiding the ScreenCaptureKit dispatch that causes process termination.
+func captureWindowCG(windowID uint32) ([]byte, error) {
+	diagf("captureWindowCG: start windowID=%d\n", windowID)
+
+	img := coregraphics.CGWindowListCreateImage(
+		corefoundation.CGRect{}, // CGRectNull — capture the window's bounds
+		coregraphics.KCGWindowListOptionIncludingWindow,
+		coregraphics.CGWindowID(windowID),
+		coregraphics.KCGWindowImageBoundsIgnoreFraming|coregraphics.KCGWindowImageBestResolution,
+	)
+	if img == 0 {
+		return nil, fmt.Errorf("CGWindowListCreateImage returned nil for window %d", windowID)
+	}
+	defer coregraphics.CGImageRelease(img)
+
+	diagf("captureWindowCG: got image %dx%d\n",
+		coregraphics.CGImageGetWidth(img), coregraphics.CGImageGetHeight(img))
+	return cgImageToPNG(img)
+}
+
 // captureWindowSCK captures a window screenshot using ScreenCaptureKit.
+// WARNING: SCK dispatches work to the main thread which can trigger process
+// termination when NSApplication.run() is driving the event loop. Prefer
+// captureWindowCG where possible.
 func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	diagf("captureWindowSCK: start windowID=%d\n", windowID)
 
-	diagf("captureWindowSCK: calling GetShareableContent\n")
-	t0 := time.Now()
 	content, err := screencapturekit.GetSCShareableContentClass().GetShareableContent(ctx)
-	diagf("captureWindowSCK: GetShareableContent returned elapsed=%v err=%v\n", time.Since(t0), err)
 	if err != nil {
 		return nil, fmt.Errorf("get shareable content: %w", err)
 	}
 
-	// Retain the content object to prevent premature deallocation
-	// by the ObjC autorelease pool.
 	objc.Send[objc.ID](content.ID, objc.Sel("retain"))
 	defer objc.Send[objc.ID](content.ID, objc.Sel("release"))
 
-	diagf("captureWindowSCK: content.ID=%v, about to call Windows()\n", content.ID)
-	flushDiagLog()
 	windows := content.Windows()
-	diagf("captureWindowSCK: got %d windows\n", len(windows))
 	var target screencapturekit.SCWindow
-	for i, w := range windows {
-		wid := w.WindowID()
-		diagf("captureWindowSCK: window[%d] id=%d\n", i, wid)
-		if wid == windowID {
+	for _, w := range windows {
+		if w.WindowID() == windowID {
 			target = w
 			break
 		}
@@ -154,25 +169,19 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	if target.GetID() == 0 {
 		return nil, fmt.Errorf("window %d not found in shareable content", windowID)
 	}
-	diagf("captureWindowSCK: found target window\n")
 
 	filter := screencapturekit.NewContentFilterWithDesktopIndependentWindow(&target)
-
 	config := screencapturekit.NewSCStreamConfiguration()
 	frame := target.Frame()
-	config.SetWidth(uintptr(frame.Size.Width * 2))   // retina 2x
-	config.SetHeight(uintptr(frame.Size.Height * 2)) // retina 2x
+	config.SetWidth(uintptr(frame.Size.Width * 2))
+	config.SetHeight(uintptr(frame.Size.Height * 2))
 
-	diagf("captureWindowSCK: calling CaptureImage %.0fx%.0f\n", frame.Size.Width*2, frame.Size.Height*2)
-	t1 := time.Now()
 	img, err := screencapturekit.GetSCScreenshotManagerClass().CaptureImageWithFilterConfiguration(ctx, &filter, &config)
-	diagf("captureWindowSCK: CaptureImage returned elapsed=%v err=%v img=%v\n", time.Since(t1), err, img)
 	if err != nil {
 		return nil, fmt.Errorf("capture image: %w", err)
 	}
 	defer coregraphics.CGImageRelease(img)
 
-	diagf("captureWindowSCK: converting to PNG\n")
 	return cgImageToPNG(img)
 }
 
