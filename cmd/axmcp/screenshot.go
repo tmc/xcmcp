@@ -10,6 +10,7 @@ import (
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/apple/corefoundation"
 	"github.com/tmc/apple/coregraphics"
+	"github.com/tmc/apple/objc"
 	"github.com/tmc/apple/screencapturekit"
 	"github.com/tmc/xcmcp/internal/ui"
 )
@@ -131,6 +132,11 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get shareable content: %w", err)
 	}
+
+	// Retain the content object to prevent premature deallocation
+	// by the ObjC autorelease pool.
+	objc.Send[objc.ID](content.ID, objc.Sel("retain"))
+	defer objc.Send[objc.ID](content.ID, objc.Sel("release"))
 
 	diagf("captureWindowSCK: getting windows list\n")
 	windows := content.Windows()

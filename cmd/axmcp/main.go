@@ -139,6 +139,21 @@ func main() {
 	// Initialize AppKit — required for NSWindow, buttons, and DispatchMainSafe.
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
+	// Set a delegate that prevents AppKit from terminating the process.
+	// Without this, NSApplication.run() may call exit(0) when frameworks
+	// like ScreenCaptureKit dispatch work to the main thread, triggering
+	// AppKit's automatic termination or last-window-closed logic.
+	delegate := appkit.NewNSApplicationDelegate(appkit.NSApplicationDelegateConfig{
+		ShouldTerminate: func(_ appkit.NSApplication) appkit.NSApplicationTerminateReply {
+			diagf("axmcp: applicationShouldTerminate called — cancelling\n")
+			return appkit.NSTerminateCancel
+		},
+		ShouldTerminateAfterLastWindowClosed: func(_ appkit.NSApplication) bool {
+			return false
+		},
+	})
+	app.SetDelegate(delegate)
+
 	// Prevent AppKit from automatically terminating the process when no
 	// windows are open. Without this, the CLI and MCP server modes get
 	// killed by the automatic termination subsystem after a brief timeout.
