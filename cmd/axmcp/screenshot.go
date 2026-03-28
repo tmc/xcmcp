@@ -138,7 +138,8 @@ func captureWindowSCK(ctx context.Context, windowID uint32) ([]byte, error) {
 	objc.Send[objc.ID](content.ID, objc.Sel("retain"))
 	defer objc.Send[objc.ID](content.ID, objc.Sel("release"))
 
-	diagf("captureWindowSCK: getting windows list\n")
+	diagf("captureWindowSCK: content.ID=%v, about to call Windows()\n", content.ID)
+	flushDiagLog()
 	windows := content.Windows()
 	diagf("captureWindowSCK: got %d windows\n", len(windows))
 	var target screencapturekit.SCWindow

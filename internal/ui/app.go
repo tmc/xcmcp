@@ -357,14 +357,19 @@ var screenCaptureRequested atomic.Bool
 func requestScreenCapture() {
 	if screenCaptureRequested.CompareAndSwap(false, true) {
 		// First request: CGRequestScreenCaptureAccess triggers the TCC prompt.
+		fmt.Fprintln(os.Stderr, "axmcp: requesting screen capture access (first time)")
 		coregraphics.CGRequestScreenCaptureAccess()
 		return
 	}
 	// Subsequent requests: CGRequestScreenCaptureAccess is a no-op after the
-	// first call. Reset TCC so the OS will re-prompt, then open System Settings.
+	// first call. Reset TCC and re-request. CGRequestScreenCaptureAccess may
+	// not trigger a new prompt, so also open System Settings as fallback.
+	fmt.Fprintln(os.Stderr, "axmcp: re-requesting screen capture — resetting TCC")
 	resetTCC("ScreenCapture")
+	coregraphics.CGRequestScreenCaptureAccess()
+	// Open System Settings as fallback in case the OS doesn't re-prompt.
 	url := uiPrivacySettingsURL("ScreenCapture")
-	exec.Command("open", url).Run()
+	go exec.Command("open", url).Run()
 }
 
 func requestScreenCaptureAsync() {

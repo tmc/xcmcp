@@ -15,12 +15,21 @@ import (
 	"runtime"
 	"time"
 
+	"sync/atomic"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/macgo"
 	"github.com/tmc/xcmcp/internal/ui"
 )
+
+// blockTermination is set once the CLI or MCP server goroutine starts
+// real work. While set, applicationShouldTerminate returns
+// NSTerminateCancel to prevent AppKit from killing the process during
+// ScreenCaptureKit dispatch. It is left unset during TCC permission
+// granting so that "Quit & Reopen" dialogs work correctly.
+var blockTermination atomic.Bool
 
 // hasArg reports whether arg appears anywhere in os.Args[1:].
 func hasArg(arg string) bool {
@@ -37,10 +46,21 @@ const (
 	permissionPollInterval = 250 * time.Millisecond
 )
 
-var diagnosticWriter io.Writer = os.Stderr
+var (
+	diagnosticWriter io.Writer = os.Stderr
+	diagnosticFile   *os.File
+)
 
 func diagf(format string, args ...any) {
 	_, _ = fmt.Fprintf(diagnosticWriter, format, args...)
+}
+
+// flushDiagLog syncs the diagnostic log file to disk. Use before
+// operations that may abruptly terminate the process.
+func flushDiagLog() {
+	if diagnosticFile != nil {
+		diagnosticFile.Sync()
+	}
 }
 
 func configureLogging(verbose bool) error {
@@ -57,6 +77,7 @@ func configureLogging(verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("open log file %s: %w", logPath, err)
 	}
+	diagnosticFile = f
 	w := io.MultiWriter(os.Stderr, f)
 	diagnosticWriter = w
 	log.SetOutput(w)
@@ -139,10 +160,21 @@ func main() {
 	// Initialize AppKit — required for NSWindow, buttons, and DispatchMainSafe.
 	app := appkit.GetNSApplicationClass().SharedApplication()
 
-	// Set a delegate that prevents AppKit from terminating when the last
-	// window closes. ShouldTerminate allows termination so that system
-	// requests like TCC "Quit & Reopen" work correctly.
+	// Set a delegate that prevents AppKit from terminating the process
+	// while work is in progress. During TCC permission granting,
+	// blockTermination is unset so "Quit & Reopen" dialogs work. Once
+	// the CLI or MCP server starts, it is set to prevent AppKit from
+	// calling exit(0) when frameworks like ScreenCaptureKit dispatch
+	// work to the main thread.
 	delegate := appkit.NewNSApplicationDelegate(appkit.NSApplicationDelegateConfig{
+		ShouldTerminate: func(_ appkit.NSApplication) appkit.NSApplicationTerminateReply {
+			if blockTermination.Load() {
+				diagf("axmcp: applicationShouldTerminate — cancelling (work in progress)\n")
+				return appkit.NSTerminateCancel
+			}
+			diagf("axmcp: applicationShouldTerminate — allowing\n")
+			return appkit.NSTerminateNow
+		},
 		ShouldTerminateAfterLastWindowClosed: func(_ appkit.NSApplication) bool {
 			return false
 		},
@@ -185,6 +217,7 @@ func main() {
 				}
 				diagf("axmcp: screen recording OK\n")
 			}
+			blockTermination.Store(true)
 			diagf("axmcp: running CLI\n")
 			runCLI()
 			// runCLI calls os.Exit on completion, so this goroutine won't return
@@ -198,6 +231,7 @@ func main() {
 			if err := waitForPermission("Accessibility", permissionWaitTimeout, permissionPollInterval, ui.IsTrusted); err != nil {
 				failPermission(err)
 			}
+			blockTermination.Store(true)
 			if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 				log.Printf("server error: %v", err)
 			}
