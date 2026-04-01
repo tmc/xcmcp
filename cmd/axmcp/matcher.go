@@ -243,10 +243,24 @@ func matchElement(snapshot elementSnapshot, options searchOptions) (matchedEleme
 	}, true
 }
 
+// isMenuRole returns true for roles that belong to the system menu bar.
+// These are deprioritized during ranking so in-window elements are preferred.
+func isMenuRole(role string) bool {
+	switch role {
+	case "AXMenuBar", "AXMenuBarItem", "AXMenu", "AXMenuItem":
+		return true
+	}
+	return false
+}
+
 func compareMatches(a, b matchedElement) bool {
 	ar := a.snapshot.record
 	br := b.snapshot.record
+	aMenu := isMenuRole(ar.role)
+	bMenu := isMenuRole(br.role)
 	switch {
+	case aMenu != bMenu:
+		return !aMenu // prefer non-menu elements
 	case ar.enabled != br.enabled:
 		return ar.enabled
 	case ar.visible != br.visible:
