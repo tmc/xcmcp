@@ -43,12 +43,16 @@ func registerSwiftUIPreviewFeatures(s *mcp.Server) {
 		if err != nil {
 			return nil, err
 		}
+		instructions := spec.Instructions
+		if rules := mustReadSkill("preview-rules.md"); rules != "" {
+			instructions += "\n\n" + rules
+		}
 		return &mcp.GetPromptResult{
 			Description: "Generate a SwiftUI preview block from embedded source context",
 			Messages: []*mcp.PromptMessage{
 				{
 					Role:    "user",
-					Content: &mcp.TextContent{Text: spec.Instructions},
+					Content: &mcp.TextContent{Text: instructions},
 				},
 				{
 					Role: "user",

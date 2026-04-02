@@ -25,6 +25,10 @@ func serverInstructions(enableXcode bool, prefix string) string {
 	b.WriteString("xcmcp exposes project inspection, build, simulator, app, and Xcode automation features over MCP.")
 	b.WriteString(" Prefer MCP tools, prompts, and resources over shell commands for routine discovery work.")
 	b.WriteString(" If the client provides file roots, treat those roots as the workspace scope for project discovery, path suggestions, and default path resolution.")
+	if s, err := readSkill("swift-conventions.md"); err == nil {
+		b.WriteString("\n\n")
+		b.WriteString(s)
+	}
 	if !enableXcode {
 		return b.String()
 	}
