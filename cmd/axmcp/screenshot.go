@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -24,6 +27,22 @@ type windowInfo struct {
 	Y         float64 `json:"y"`
 	Width     float64 `json:"width"`
 	Height    float64 `json:"height"`
+}
+
+func (w windowInfo) rect() (corefoundation.CGRect, bool) {
+	if w.Width <= 0 || w.Height <= 0 {
+		return corefoundation.CGRect{}, false
+	}
+	return corefoundation.CGRect{
+		Origin: corefoundation.CGPoint{
+			X: w.X,
+			Y: w.Y,
+		},
+		Size: corefoundation.CGSize{
+			Width:  w.Width,
+			Height: w.Height,
+		},
+	}, true
 }
 
 // cfStringToGo extracts a Go string from a CFStringRef.
@@ -81,6 +100,44 @@ func dictGetNumber(dict corefoundation.CFDictionaryRef, key string) (int64, bool
 	return 0, false
 }
 
+func dictGetDictionary(dict corefoundation.CFDictionaryRef, key string) (corefoundation.CFDictionaryRef, bool) {
+	k := makeCFString(key)
+	defer corefoundation.CFRelease(corefoundation.CFTypeRef(k))
+	v := corefoundation.CFDictionaryGetValue(dict, cfPointer(uintptr(k)))
+	if v == nil {
+		return 0, false
+	}
+	return corefoundation.CFDictionaryRef(uintptr(v)), true
+}
+
+func dictGetRect(dict corefoundation.CFDictionaryRef, key string) (corefoundation.CGRect, bool) {
+	bounds, ok := dictGetDictionary(dict, key)
+	if !ok {
+		return corefoundation.CGRect{}, false
+	}
+	var rect corefoundation.CGRect
+	if !coregraphics.CGRectMakeWithDictionaryRepresentation(bounds, &rect) {
+		return corefoundation.CGRect{}, false
+	}
+	return rect, true
+}
+
+func windowOwnerMatchesIdentifier(win windowInfo, appIdentifier string) bool {
+	appIdentifier = strings.TrimSpace(appIdentifier)
+	if appIdentifier == "" {
+		return false
+	}
+	if pid, err := strconv.ParseInt(appIdentifier, 10, 64); err == nil {
+		return win.OwnerPID == pid
+	}
+
+	ownerLower := strings.ToLower(win.OwnerName)
+	queryLower := strings.ToLower(appIdentifier)
+	return strings.EqualFold(win.OwnerName, appIdentifier) ||
+		strings.Contains(ownerLower, queryLower) ||
+		strings.Contains(queryLower, ownerLower)
+}
+
 // listAppWindows returns on-screen windows matching the given app identifier.
 func listAppWindows(appIdentifier string) ([]windowInfo, error) {
 	windowList := coregraphics.CGWindowListCopyWindowInfo(
@@ -102,21 +159,23 @@ func listAppWindows(appIdentifier string) ([]windowInfo, error) {
 		windowName := dictGetString(dict, coregraphics.KCGWindowName)
 		ownerPID, _ := dictGetNumber(dict, coregraphics.KCGWindowOwnerPID)
 		windowID, _ := dictGetNumber(dict, coregraphics.KCGWindowNumber)
+		bounds, _ := dictGetRect(dict, coregraphics.KCGWindowBounds)
 
-		ownerLower := strings.ToLower(ownerName)
-		queryLower := strings.ToLower(appIdentifier)
-		if !strings.EqualFold(ownerName, appIdentifier) &&
-			!strings.Contains(ownerLower, queryLower) &&
-			!strings.Contains(queryLower, ownerLower) {
-			continue
-		}
-
-		windows = append(windows, windowInfo{
+		win := windowInfo{
 			WindowID:  uint32(windowID),
 			Title:     windowName,
 			OwnerName: ownerName,
 			OwnerPID:  ownerPID,
-		})
+			X:         bounds.Origin.X,
+			Y:         bounds.Origin.Y,
+			Width:     bounds.Size.Width,
+			Height:    bounds.Size.Height,
+		}
+		if !windowOwnerMatchesIdentifier(win, appIdentifier) {
+			continue
+		}
+
+		windows = append(windows, win)
 	}
 	if len(windows) == 0 {
 		return nil, fmt.Errorf("no windows found for %q", appIdentifier)
@@ -124,26 +183,180 @@ func listAppWindows(appIdentifier string) ([]windowInfo, error) {
 	return windows, nil
 }
 
+func matchWindowInfo(windows []windowInfo, titles ...string) (windowInfo, bool) {
+	for _, title := range titles {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		for _, win := range windows {
+			if strings.EqualFold(strings.TrimSpace(win.Title), title) {
+				return win, true
+			}
+		}
+	}
+	for _, title := range titles {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		lower := strings.ToLower(title)
+		for _, win := range windows {
+			if strings.Contains(strings.ToLower(win.Title), lower) {
+				return win, true
+			}
+		}
+	}
+	return windowInfo{}, false
+}
+
+func captureWindow(win windowInfo) ([]byte, error) {
+	diagf("captureWindow: title=%q owner=%q id=%d\n", win.Title, win.OwnerName, win.WindowID)
+
+	var errs []string
+	appendErr := func(label string, err error) {
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", label, err))
+		}
+	}
+
+	if png, err := captureWindowCG(win); err == nil {
+		return png, nil
+	} else {
+		diagf("captureWindow: CG failed: %v\n", err)
+		appendErr("CGWindowListCreateImage", err)
+	}
+
+	if !ui.IsScreenRecordingTrusted() {
+		if !ui.WaitForScreenRecording(30 * time.Second) {
+			return nil, fmt.Errorf("screenshot failed: Screen Recording permission required — grant access in System Settings > Privacy & Security")
+		}
+	}
+
+	// Fall back to screencapture on the window's bounds rather than
+	// ScreenCaptureKit. The latter can terminate the app from inside AppKit's
+	// run loop, which takes down the stdio transport.
+	if png, err := captureWindowRect(win); err == nil {
+		return png, nil
+	} else {
+		diagf("captureWindow: rect fallback failed: %v\n", err)
+		appendErr("screencapture -R", err)
+	}
+
+	if len(errs) == 0 {
+		return nil, fmt.Errorf("capture window %q (id=%d): failed", win.Title, win.WindowID)
+	}
+	return nil, fmt.Errorf("capture window %q (id=%d): %s", win.Title, win.WindowID, strings.Join(errs, "; "))
+}
+
 // captureWindowCG captures a window screenshot using CGWindowListCreateImage.
 // This uses the legacy CoreGraphics API which runs synchronously on the calling
 // thread, avoiding the ScreenCaptureKit dispatch that causes process termination.
-func captureWindowCG(windowID uint32) ([]byte, error) {
-	diagf("captureWindowCG: start windowID=%d\n", windowID)
+func captureWindowCG(win windowInfo) ([]byte, error) {
+	diagf("captureWindowCG: start windowID=%d\n", win.WindowID)
 
-	img := coregraphics.CGWindowListCreateImage(
-		corefoundation.CGRect{}, // CGRectNull — capture the window's bounds
-		coregraphics.KCGWindowListOptionIncludingWindow,
-		coregraphics.CGWindowID(windowID),
-		coregraphics.KCGWindowImageBoundsIgnoreFraming|coregraphics.KCGWindowImageBestResolution,
-	)
-	if img == 0 {
-		return nil, fmt.Errorf("CGWindowListCreateImage returned nil for window %d", windowID)
+	type attempt struct {
+		name  string
+		rect  corefoundation.CGRect
+		valid bool
+		opts  coregraphics.CGWindowImageOption
 	}
-	defer coregraphics.CGImageRelease(img)
 
-	diagf("captureWindowCG: got image %dx%d\n",
-		coregraphics.CGImageGetWidth(img), coregraphics.CGImageGetHeight(img))
-	return cgImageToPNG(img)
+	rect, hasRect := win.rect()
+	attempts := []attempt{
+		{
+			name:  "window bounds ignore framing, best resolution",
+			opts:  coregraphics.KCGWindowImageBoundsIgnoreFraming | coregraphics.KCGWindowImageBestResolution,
+			valid: true,
+		},
+		{
+			name:  "window bounds explicit rect",
+			rect:  rect,
+			valid: hasRect,
+			opts:  coregraphics.KCGWindowImageBoundsIgnoreFraming | coregraphics.KCGWindowImageBestResolution,
+		},
+		{
+			name:  "window bounds nominal resolution",
+			rect:  rect,
+			valid: hasRect,
+			opts:  coregraphics.KCGWindowImageBoundsIgnoreFraming | coregraphics.KCGWindowImageNominalResolution,
+		},
+	}
+	var errs []string
+	for _, attempt := range attempts {
+		if !attempt.valid {
+			continue
+		}
+		for retry := 0; retry < 3; retry++ {
+			img := coregraphics.CGWindowListCreateImage(
+				attempt.rect,
+				coregraphics.KCGWindowListOptionIncludingWindow,
+				coregraphics.CGWindowID(win.WindowID),
+				attempt.opts,
+			)
+			if img != 0 {
+				defer coregraphics.CGImageRelease(img)
+				diagf("captureWindowCG: got image %dx%d via %s retry=%d\n",
+					coregraphics.CGImageGetWidth(img), coregraphics.CGImageGetHeight(img), attempt.name, retry)
+				return cgImageToPNG(img)
+			}
+			if retry < 2 {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		errs = append(errs, attempt.name)
+	}
+	return nil, fmt.Errorf("CGWindowListCreateImage returned nil for window %d (%s)", win.WindowID, strings.Join(errs, ", "))
+}
+
+func captureWindowRect(win windowInfo) ([]byte, error) {
+	rect, ok := win.rect()
+	if !ok {
+		return nil, fmt.Errorf("window %d has empty bounds", win.WindowID)
+	}
+	return captureRect(rect)
+}
+
+func captureRect(rect corefoundation.CGRect) ([]byte, error) {
+	if rect.Size.Width <= 0 || rect.Size.Height <= 0 {
+		return nil, fmt.Errorf("empty capture rect")
+	}
+	f, err := os.CreateTemp("", "axmcp-window-*.png")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(name)
+		return nil, fmt.Errorf("close temp file: %w", err)
+	}
+	defer os.Remove(name)
+
+	rectArg := fmt.Sprintf("%d,%d,%d,%d",
+		int(rect.Origin.X),
+		int(rect.Origin.Y),
+		int(rect.Size.Width),
+		int(rect.Size.Height),
+	)
+	diagf("captureRect: screencapture -R %s\n", rectArg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "screencapture", "-x", "-R", rectArg, "-t", "png", name)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("screencapture %s timed out", rectArg)
+		}
+		return nil, fmt.Errorf("screencapture %s: %w: %s", rectArg, err, strings.TrimSpace(string(out)))
+	}
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read temp screenshot: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("screencapture %s produced empty output", rectArg)
+	}
+	diagf("captureRect: got %d bytes\n", len(data))
+	return data, nil
 }
 
 // captureWindowSCK captures a window screenshot using ScreenCaptureKit.
