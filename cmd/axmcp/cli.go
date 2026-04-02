@@ -38,6 +38,8 @@ func runCLI() {
 		cliFind(),
 		cliPipe(),
 		cliClick(),
+		cliHover(),
+		cliRightClick(),
 		cliType(),
 		cliMenu(),
 		cliFocus(),
@@ -204,8 +206,11 @@ Available stages:
   list                        Print element list
   json                        Print JSON output
   click                       Click element
+  rightclick                  Right-click element
   click-at <x> <y>            Click at offset
   hover                       Move mouse to element
+  ocr-hover <text>            Move mouse to OCR text
+  highlight <text>            Draw a 2s highlight around OCR text
   type <text>                 Type text
   attr <AXAttr>               Print attribute
   click-menu <A> <B> <C>      Click menu path`,
@@ -245,29 +250,160 @@ func cliClick() *cobra.Command {
 				Limit:    500,
 			})
 			if len(result.matches) == 0 {
-				return fmt.Errorf("%s", noMatchMessage(result))
+				return performCLIOCRClick(app, args[1])
 			}
-			match := result.matches[0]
-			resolution := resolveClickTarget(match, 500)
-			el := resolution.target.element
-			if el == nil {
-				return fmt.Errorf("click target disappeared: %s", formatMatch(match))
+			resolution := resolveClickTarget(result.matches[0], 500)
+			if resolution.target.element == nil {
+				return fmt.Errorf("target disappeared: %s", formatMatch(result.matches[0]))
 			}
-			if err := el.Click(); err != nil {
+			clickSummary, err := performDefaultClick(resolution.target)
+			if err != nil {
 				return fmt.Errorf("click %s: %w", formatSnapshot(resolution.target), err)
 			}
-			fmt.Printf("clicked %s\n", formatSnapshot(resolution.target))
-			if note := selectionReason(result); note != "" {
-				fmt.Println(note)
-			}
-			if resolution.reason != "" {
-				fmt.Println(resolution.reason)
-			}
+			fmt.Println(clickSummary)
+			printCLIActionNotes(result, resolution)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&role, "role", "", "AX role filter")
 	return cmd
+}
+
+// ── hover ─────────────────────────────────────────────────────────────────────
+
+func cliHover() *cobra.Command {
+	var role string
+	cmd := &cobra.Command{
+		Use:   "hover <app> <contains>",
+		Short: "Hover an element found by normalized text lookup",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app, err := spinAndOpen(args[0])
+			if err != nil {
+				return err
+			}
+			defer app.Close()
+			result := findElements(app.Root(), searchOptions{
+				Role:     role,
+				Contains: args[1],
+				Limit:    500,
+			})
+			if len(result.matches) == 0 {
+				return performCLIOCRHover(app, args[1])
+			}
+			resolution := resolveClickTarget(result.matches[0], 500)
+			if resolution.target.element == nil {
+				return fmt.Errorf("target disappeared: %s", formatMatch(result.matches[0]))
+			}
+			hoverSummary, err := performDefaultHover(resolution.target)
+			if err != nil {
+				return fmt.Errorf("hover %s: %w", formatSnapshot(resolution.target), err)
+			}
+			fmt.Println(hoverSummary)
+			printCLIActionNotes(result, resolution)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&role, "role", "", "AX role filter")
+	return cmd
+}
+
+// ── rightclick ────────────────────────────────────────────────────────────────
+
+func cliRightClick() *cobra.Command {
+	var role string
+	cmd := &cobra.Command{
+		Use:   "rightclick <app> <contains>",
+		Short: "Right-click an element found by normalized text lookup",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app, err := spinAndOpen(args[0])
+			if err != nil {
+				return err
+			}
+			defer app.Close()
+			result, resolution, err := resolveCLIActionTarget(app, role, args[1])
+			if err != nil {
+				return err
+			}
+			rightClickSummary, err := performDefaultRightClick(resolution.target)
+			if err != nil {
+				return fmt.Errorf("rightclick %s: %w", formatSnapshot(resolution.target), err)
+			}
+			fmt.Println(rightClickSummary)
+			printCLIActionNotes(result, resolution)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&role, "role", "", "AX role filter")
+	return cmd
+}
+
+func resolveCLIActionTarget(app *axuiautomation.Application, role, contains string) (matchResult, clickResolution, error) {
+	result := findElements(app.Root(), searchOptions{
+		Role:     role,
+		Contains: contains,
+		Limit:    500,
+	})
+	if len(result.matches) == 0 {
+		return result, clickResolution{}, fmt.Errorf("%s", noMatchMessage(result))
+	}
+	match := result.matches[0]
+	resolution := resolveClickTarget(match, 500)
+	if resolution.target.element == nil {
+		return result, resolution, fmt.Errorf("target disappeared: %s", formatMatch(match))
+	}
+	return result, resolution, nil
+}
+
+func printCLIActionNotes(result matchResult, resolution clickResolution) {
+	if note := selectionReason(result); note != "" {
+		fmt.Println(note)
+	}
+	if resolution.reason != "" {
+		fmt.Println(resolution.reason)
+	}
+}
+
+func performCLIOCRHover(app *axuiautomation.Application, query string) error {
+	capture, err := capturePipelineOCRScope(&pipeContext{app: app})
+	if err != nil {
+		return err
+	}
+
+	selection, err := selectOCRMatch(capture.result, query, nil)
+	if err != nil {
+		return err
+	}
+	summary, resolutionNote, err := performOCRHover(capture, selection.match)
+	if err != nil {
+		return err
+	}
+	fmt.Println(summary)
+	fmt.Println(selection.resolved)
+	if resolutionNote != "" {
+		fmt.Println(resolutionNote)
+	}
+	return nil
+}
+
+func performCLIOCRClick(app *axuiautomation.Application, query string) error {
+	capture, err := capturePipelineOCRScope(&pipeContext{app: app})
+	if err != nil {
+		return err
+	}
+
+	selection, err := selectOCRMatch(capture.result, query, nil)
+	if err != nil {
+		return err
+	}
+	x, y := selection.match.Center()
+	if err := clickLocalPoint(capture.target, x, y); err != nil {
+		return fmt.Errorf("click OCR match %q in %s: %w", selection.match.Text, capture.desc, err)
+	}
+	fmt.Printf("clicked OCR match %q in %s at %d,%d via local click\n", selection.match.Text, capture.desc, x, y)
+	fmt.Println(selection.resolved)
+	return nil
 }
 
 // ── type ──────────────────────────────────────────────────────────────────────
@@ -294,7 +430,7 @@ func cliType() *cobra.Command {
 			if el == nil {
 				return fmt.Errorf("type target disappeared: %s", formatMatch(result.matches[0]))
 			}
-			if err := el.Click(); err != nil {
+			if err := focusElement(el); err != nil {
 				return fmt.Errorf("focus %s: %w", formatMatch(result.matches[0]), err)
 			}
 			if err := el.TypeText(args[2]); err != nil {
