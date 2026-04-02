@@ -14,6 +14,7 @@ func registerCoreTools(s *mcp.Server) {
 	registerShutdownSimulator(s)
 	registerSwiftUIPreviewFeatures(s)
 	registerSwiftPMPreviewRestructure(s)
+	registerConventionPrompts(s)
 }
 
 func standardToolsets() []toolset {
