@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -181,6 +182,71 @@ func TestNoMatchMessageIncludesCandidates(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("noMatchMessage missing %q in %q", want, msg)
 		}
+	}
+}
+
+func TestSearchTraversalLimitUsesTraversalFloor(t *testing.T) {
+	if got := searchTraversalLimit(20); got != defaultSearchTraversalLimit {
+		t.Fatalf("searchTraversalLimit(20) = %d, want %d", got, defaultSearchTraversalLimit)
+	}
+	if got := searchTraversalLimit(2500); got != 2500 {
+		t.Fatalf("searchTraversalLimit(2500) = %d, want 2500", got)
+	}
+}
+
+func TestMatchElementsFromSnapshotsRespectsResultLimit(t *testing.T) {
+	snapshots := make([]elementSnapshot, 0, 12)
+	for i := 0; i < 12; i++ {
+		snapshots = append(snapshots, elementSnapshot{record: elementRecord{
+			role:       "AXRadioButton",
+			desc:       fmt.Sprintf("Tab %02d", i),
+			enabled:    true,
+			visible:    true,
+			actionable: true,
+			index:      i,
+		}})
+	}
+
+	result := matchElementsFromSnapshots(snapshots, searchOptions{
+		Role:     "AXRadioButton",
+		Contains: "tab",
+		Limit:    5,
+	})
+	if len(result.matches) != 5 {
+		t.Fatalf("len(matches) = %d, want 5", len(result.matches))
+	}
+	if got := result.matches[4].snapshot.record.desc; got != "Tab 04" {
+		t.Fatalf("fifth match = %q, want Tab 04", got)
+	}
+}
+
+func TestMatchElementsFromSnapshotsFindsLaterMatches(t *testing.T) {
+	snapshots := make([]elementSnapshot, 0, 30)
+	for i := 0; i < 30; i++ {
+		desc := fmt.Sprintf("Tab %02d", i)
+		if i == 25 {
+			desc = "Media"
+		}
+		snapshots = append(snapshots, elementSnapshot{record: elementRecord{
+			role:       "AXRadioButton",
+			desc:       desc,
+			enabled:    true,
+			visible:    true,
+			actionable: true,
+			index:      i,
+		}})
+	}
+
+	result := matchElementsFromSnapshots(snapshots, searchOptions{
+		Role:     "AXRadioButton",
+		Contains: "Media",
+		Limit:    20,
+	})
+	if len(result.matches) != 1 {
+		t.Fatalf("len(matches) = %d, want 1", len(result.matches))
+	}
+	if got := result.matches[0].snapshot.record.desc; got != "Media" {
+		t.Fatalf("match desc = %q, want Media", got)
 	}
 }
 

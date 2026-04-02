@@ -74,6 +74,8 @@ type matchField struct {
 	priority int
 }
 
+const defaultSearchTraversalLimit = 2000
+
 func normalizeMatchString(s string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(s)), " "))
 }
@@ -316,8 +318,14 @@ func primaryQuery(options searchOptions) string {
 	}
 }
 
-func findElements(root *axuiautomation.Element, options searchOptions) matchResult {
-	snapshots := collectSnapshots(root, options.Limit)
+func searchTraversalLimit(limit int) int {
+	if limit <= 0 || limit < defaultSearchTraversalLimit {
+		return defaultSearchTraversalLimit
+	}
+	return limit
+}
+
+func matchElementsFromSnapshots(snapshots []elementSnapshot, options searchOptions) matchResult {
 	result := matchResult{
 		options:    options,
 		candidates: make([]elementSnapshot, 0, len(snapshots)),
@@ -334,7 +342,15 @@ func findElements(root *axuiautomation.Element, options searchOptions) matchResu
 	sort.SliceStable(result.matches, func(i, j int) bool {
 		return compareMatches(result.matches[i], result.matches[j])
 	})
+	if options.Limit > 0 && len(result.matches) > options.Limit {
+		result.matches = result.matches[:options.Limit]
+	}
 	return result
+}
+
+func findElements(root *axuiautomation.Element, options searchOptions) matchResult {
+	snapshots := collectSnapshots(root, searchTraversalLimit(options.Limit))
+	return matchElementsFromSnapshots(snapshots, options)
 }
 
 func formatRecord(record elementRecord) string {
