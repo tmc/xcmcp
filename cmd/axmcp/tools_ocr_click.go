@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/apple/x/axuiautomation"
@@ -265,12 +264,14 @@ func performOCRClick(capture *ocrCapture, match ocrResult) (summary, resolutionN
 	}
 	x, y := match.Center()
 	if target, note, ok := nearestOCRActionableTarget(capture, match); ok && target.element != nil {
-		if err := target.element.PerformAction("AXPress"); err == nil {
-			axuiautomation.SpinRunLoop(200 * time.Millisecond)
-			return fmt.Sprintf("clicked OCR match %q in %s via AXPress on %s", match.Text, capture.desc, formatSnapshot(target)), note, nil
-		} else {
-			resolutionNote = fmt.Sprintf("%s\nAXPress failed: %v; falling back to local click", note, err)
+		clickSummary, err := performDefaultClick(target)
+		if err == nil {
+			if strings.Contains(clickSummary, "via AXPress") {
+				return fmt.Sprintf("clicked OCR match %q in %s via AXPress on %s", match.Text, capture.desc, formatSnapshot(target)), note, nil
+			}
+			return fmt.Sprintf("clicked OCR match %q in %s via local click on %s", match.Text, capture.desc, formatSnapshot(target)), note, nil
 		}
+		resolutionNote = fmt.Sprintf("%s\nclick target failed: %v; falling back to OCR point", note, err)
 	}
 	if err := clickLocalPoint(capture.target, x, y); err != nil {
 		return "", resolutionNote, fmt.Errorf("click OCR match %q in %s: %w", match.Text, capture.desc, err)
