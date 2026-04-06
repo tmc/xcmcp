@@ -15,6 +15,8 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tmc/apple/corefoundation"
+	"github.com/tmc/apple/coregraphics"
 	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/xcmcp/internal/ui"
 )
@@ -72,7 +74,11 @@ func registerAXTools(s *mcp.Server) {
 	registerAXWindowTools(s)
 }
 
-// openApp opens an application by bundle ID or numeric PID string.
+// openApp opens an application by bundle ID, numeric PID, or display name.
+// When the standard lookup fails (common with Electron apps that register as
+// "Electron" instead of their display name), falls back to scanning
+// CGWindowList for windows whose title contains the query and uses the
+// owning process's PID.
 func openApp(arg string) (*axuiautomation.Application, error) {
 	if pid, err := strconv.ParseInt(arg, 10, 32); err == nil {
 		app := axuiautomation.NewApplicationFromPID(int32(pid))
@@ -81,7 +87,51 @@ func openApp(arg string) (*axuiautomation.Application, error) {
 		}
 		return app, nil
 	}
-	return axuiautomation.NewApplication(arg)
+	app, err := axuiautomation.NewApplication(arg)
+	if err == nil {
+		return app, nil
+	}
+	// Fallback: scan CGWindowList for a window title containing the query.
+	// This handles Electron apps whose process name differs from the app name.
+	pid, found := findPIDByWindowTitle(arg)
+	if !found {
+		return nil, err
+	}
+	slog.Debug("openApp: resolved via window title", "query", arg, "pid", pid)
+	app = axuiautomation.NewApplicationFromPID(pid)
+	if app == nil {
+		return nil, fmt.Errorf("cannot connect to PID %d (found via window title %q)", pid, arg)
+	}
+	return app, nil
+}
+
+// findPIDByWindowTitle scans the on-screen CGWindowList for a window whose
+// title contains the given query (case-insensitive) and returns the owning
+// process's PID.
+func findPIDByWindowTitle(query string) (int32, bool) {
+	windowList := coregraphics.CGWindowListCopyWindowInfo(
+		coregraphics.KCGWindowListOptionOnScreenOnly,
+		0,
+	)
+	if windowList == 0 {
+		return 0, false
+	}
+	defer corefoundation.CFRelease(corefoundation.CFTypeRef(windowList))
+
+	lower := strings.ToLower(query)
+	count := corefoundation.CFArrayGetCount(windowList)
+	for i := range count {
+		dictPtr := corefoundation.CFArrayGetValueAtIndex(windowList, i)
+		dict := corefoundation.CFDictionaryRef(uintptr(dictPtr))
+		title := dictGetString(dict, coregraphics.KCGWindowName)
+		if title != "" && strings.Contains(strings.ToLower(title), lower) {
+			pid, ok := dictGetNumber(dict, coregraphics.KCGWindowOwnerPID)
+			if ok && pid > 0 {
+				return int32(pid), true
+			}
+		}
+	}
+	return 0, false
 }
 
 // spinAndOpen opens an app, sets an AX messaging timeout, and spins
