@@ -105,14 +105,23 @@ func openApp(arg string) (*axuiautomation.Application, error) {
 	return app, nil
 }
 
-// findPIDByWindowTitle scans the on-screen CGWindowList for a window whose
-// title contains the given query (case-insensitive) and returns the owning
-// process's PID.
+// findPIDByWindowTitle scans CGWindowList for a window whose title contains the
+// given query (case-insensitive) and returns the owning process's PID. It first
+// checks on-screen windows, then falls back to all windows (other Spaces/displays).
 func findPIDByWindowTitle(query string) (int32, bool) {
-	windowList := coregraphics.CGWindowListCopyWindowInfo(
+	for _, option := range []coregraphics.CGWindowListOption{
 		coregraphics.KCGWindowListOptionOnScreenOnly,
-		0,
-	)
+		coregraphics.KCGWindowListOptionAll,
+	} {
+		if pid, ok := findPIDByWindowTitleWithOption(query, option); ok {
+			return pid, true
+		}
+	}
+	return 0, false
+}
+
+func findPIDByWindowTitleWithOption(query string, option coregraphics.CGWindowListOption) (int32, bool) {
+	windowList := coregraphics.CGWindowListCopyWindowInfo(option, 0)
 	if windowList == 0 {
 		return 0, false
 	}
@@ -608,20 +617,21 @@ func registerAXListWindows(s *mcp.Server) {
 		}
 		defer app.Close()
 
-		wins := app.WindowList()
-		if len(wins) == 0 {
-			return nil, nil, fmt.Errorf("no windows found for %q", args.App)
-		}
-		displays := activeDisplayBounds()
 		type winInfo struct {
-			Title   string `json:"title"`
-			X       int    `json:"x"`
-			Y       int    `json:"y"`
-			Width   int    `json:"width"`
-			Height  int    `json:"height"`
-			Display int    `json:"display"`
+			Title     string `json:"title"`
+			X         int    `json:"x"`
+			Y         int    `json:"y"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			Display   int    `json:"display"`
+			OffScreen bool   `json:"off_screen,omitempty"`
 		}
-		result := make([]winInfo, 0, len(wins))
+
+		displays := activeDisplayBounds()
+		var result []winInfo
+
+		// Try AX window list first.
+		wins := app.WindowList()
 		for _, w := range wins {
 			x, y := w.Position()
 			width, height := w.Size()
@@ -634,6 +644,26 @@ func registerAXListWindows(s *mcp.Server) {
 				Display: displayIndexForPoint(displays, float64(x), float64(y)),
 			})
 		}
+
+		// If AX returned nothing, fall back to CGWindowList (finds windows on other Spaces/displays).
+		if len(result) == 0 {
+			cgWindows, cgErr := listAppWindows(args.App)
+			if cgErr != nil {
+				return nil, nil, fmt.Errorf("no windows found for %q via AX or CGWindowList — the app may have windows on another Space or display", args.App)
+			}
+			for _, cw := range cgWindows {
+				result = append(result, winInfo{
+					Title:     cw.Title,
+					X:         int(cw.X),
+					Y:         int(cw.Y),
+					Width:     int(cw.Width),
+					Height:    int(cw.Height),
+					Display:   displayIndexForPoint(displays, cw.X, cw.Y),
+					OffScreen: cw.OffScreen,
+				})
+			}
+		}
+
 		data, err := json.Marshal(result)
 		if err != nil {
 			return nil, nil, fmt.Errorf("marshal: %w", err)
@@ -739,7 +769,7 @@ func captureWindowByName(appName string) ([]byte, error) {
 	diagf("captureWindowByName: listing windows\n")
 	windows, err := listAppWindows(appName)
 	if err != nil {
-		return nil, fmt.Errorf("no windows found for %q: %w", appName, err)
+		return nil, fmt.Errorf("no windows found for %q — the app may have windows on another Space or display: %w", appName, err)
 	}
 	diagf("captureWindowByName: found %d windows, firstID=%d\n", len(windows), windows[0].WindowID)
 
@@ -757,11 +787,14 @@ func captureWindowByTitle(appName, title string) ([]byte, error) {
 	}
 	windows, err := listAppWindows(appName)
 	if err != nil {
-		return nil, fmt.Errorf("no windows found for %q: %w", appName, err)
+		return nil, fmt.Errorf("no windows found for %q — the app may have windows on another Space or display: %w", appName, err)
 	}
 	win, ok := matchWindowInfo(windows, title)
 	if !ok {
 		return nil, fmt.Errorf("no window matching %q found for %q", title, appName)
+	}
+	if win.OffScreen {
+		slog.Warn("capturing off-screen window (may be on another Space)", "app", appName, "title", win.Title, "windowID", win.WindowID)
 	}
 	return captureWindow(win)
 }

@@ -28,6 +28,7 @@ type windowInfo struct {
 	Y         float64 `json:"y"`
 	Width     float64 `json:"width"`
 	Height    float64 `json:"height"`
+	OffScreen bool    `json:"off_screen,omitempty"`
 }
 
 func (w windowInfo) rect() (corefoundation.CGRect, bool) {
@@ -140,11 +141,26 @@ func windowOwnerMatchesIdentifier(win windowInfo, appIdentifier string) bool {
 }
 
 // listAppWindows returns on-screen windows matching the given app identifier.
+// If no on-screen windows are found, it retries with KCGWindowListOptionAll to
+// discover windows on other Spaces or displays, and marks them as off-screen.
 func listAppWindows(appIdentifier string) ([]windowInfo, error) {
-	windowList := coregraphics.CGWindowListCopyWindowInfo(
-		coregraphics.KCGWindowListOptionOnScreenOnly,
-		0,
-	)
+	windows, err := listAppWindowsWithOption(appIdentifier, coregraphics.KCGWindowListOptionOnScreenOnly)
+	if err == nil {
+		return windows, nil
+	}
+	// On-screen query found nothing. Try all windows (includes other Spaces/displays).
+	allWindows, allErr := listAppWindowsWithOption(appIdentifier, coregraphics.KCGWindowListOptionAll)
+	if allErr != nil {
+		return nil, fmt.Errorf("no windows found for %q (on-screen or otherwise)", appIdentifier)
+	}
+	for i := range allWindows {
+		allWindows[i].OffScreen = true
+	}
+	return allWindows, nil
+}
+
+func listAppWindowsWithOption(appIdentifier string, option coregraphics.CGWindowListOption) ([]windowInfo, error) {
+	windowList := coregraphics.CGWindowListCopyWindowInfo(option, 0)
 	if windowList == 0 {
 		return nil, fmt.Errorf("CGWindowListCopyWindowInfo returned nil")
 	}

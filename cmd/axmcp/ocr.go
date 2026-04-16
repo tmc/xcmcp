@@ -155,7 +155,7 @@ func ocrWindow(appName, windowTitle string) ([]ocrResult, int, int, error) {
 	}
 	windows, err := listAppWindows(appName)
 	if err != nil || len(windows) == 0 {
-		return nil, 0, 0, fmt.Errorf("no windows for %q: %w", appName, err)
+		return nil, 0, 0, fmt.Errorf("no windows for %q — the app may have windows on another Space or display: %w", appName, err)
 	}
 	win := windows[0]
 	if windowTitle != "" {

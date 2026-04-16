@@ -192,7 +192,7 @@ func registerAXWindowAction(s *mcp.Server) {
 func resolveWindow(app *axuiautomation.Application, titleSubstr string) (*axuiautomation.Element, string, error) {
 	wins := app.WindowList()
 	if len(wins) == 0 {
-		return nil, "", fmt.Errorf("no windows found")
+		return nil, "", fmt.Errorf("no windows found (app may have windows on another Space or display)")
 	}
 	if titleSubstr == "" {
 		title := wins[0].Title()
