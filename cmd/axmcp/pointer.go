@@ -22,14 +22,17 @@ var (
 )
 
 const (
-	cgEventLeftMouseDown   = 1
-	cgEventLeftMouseUp     = 2
-	cgEventRightMouseDown  = 3
-	cgEventRightMouseUp    = 4
-	cgMouseEventClickState = 1
-	cgMouseButtonLeft      = 0
-	cgMouseButtonRight     = 1
-	cgHIDEventTap          = 0
+	cgEventLeftMouseDown     = 1
+	cgEventLeftMouseUp       = 2
+	cgEventRightMouseDown    = 3
+	cgEventRightMouseUp      = 4
+	cgEventMouseMoved        = 5
+	cgEventLeftMouseDragged  = 6
+	cgEventRightMouseDragged = 7
+	cgMouseEventClickState   = 1
+	cgMouseButtonLeft        = 0
+	cgMouseButtonRight       = 1
+	cgHIDEventTap            = 0
 )
 
 func initCGMouseEvents() {
@@ -120,6 +123,18 @@ func rightClickScreenPoint(x, y int) error {
 	return mouseClickScreenPoint(x, y, cgEventRightMouseDown, cgEventRightMouseUp, cgMouseButtonRight)
 }
 
+func dragLocalPoint(el *axuiautomation.Element, startX, startY, endX, endY int, button int32) error {
+	if err := validateLocalPoint(el, startX, startY); err != nil {
+		return err
+	}
+	if err := validateLocalPoint(el, endX, endY); err != nil {
+		return err
+	}
+	absStartX, absStartY := localPointToScreen(el, startX, startY)
+	absEndX, absEndY := localPointToScreen(el, endX, endY)
+	return dragScreenPoint(absStartX, absStartY, absEndX, absEndY, button, 0, 0)
+}
+
 func doubleClickScreenPoint(x, y int) error {
 	initCGMouseEvents()
 	switch {
@@ -182,6 +197,79 @@ func postMouseClickEvent(x, y int, downType, upType, button int32, clickState in
 	cgEventPost(cgHIDEventTap, mouseUp)
 	corefoundation.CFRelease(corefoundation.CFTypeRef(mouseUp))
 	return nil
+}
+
+func dragScreenPoint(startX, startY, endX, endY int, button int32, steps int, duration time.Duration) error {
+	initCGMouseEvents()
+	switch {
+	case cgWarpMouseCursorPosition == nil:
+		return fmt.Errorf("CGWarpMouseCursorPosition not available")
+	case cgEventCreateMouseEvent == nil:
+		return fmt.Errorf("CGEventCreateMouseEvent not available")
+	case cgEventPost == nil:
+		return fmt.Errorf("CGEventPost not available")
+	}
+
+	downType, draggedType, upType, err := dragEventTypes(button)
+	if err != nil {
+		return err
+	}
+	if steps <= 0 {
+		distance := math.Hypot(float64(endX-startX), float64(endY-startY))
+		steps = int(math.Ceil(distance / 24))
+		if steps < 4 {
+			steps = 4
+		}
+	}
+	if duration <= 0 {
+		duration = 250 * time.Millisecond
+	}
+	interval := duration / time.Duration(steps)
+	if interval < 5*time.Millisecond {
+		interval = 5 * time.Millisecond
+	}
+
+	cgWarpMouseCursorPosition(float64(startX), float64(startY))
+	time.Sleep(10 * time.Millisecond)
+
+	mouseDown := cgEventCreateMouseEvent(0, downType, float64(startX), float64(startY), button)
+	if mouseDown == 0 {
+		return fmt.Errorf("failed to create mouse down event")
+	}
+	cgEventPost(cgHIDEventTap, mouseDown)
+	corefoundation.CFRelease(corefoundation.CFTypeRef(mouseDown))
+
+	for i := 1; i <= steps; i++ {
+		progress := float64(i) / float64(steps)
+		x := int(math.Round(float64(startX) + float64(endX-startX)*progress))
+		y := int(math.Round(float64(startY) + float64(endY-startY)*progress))
+		dragged := cgEventCreateMouseEvent(0, draggedType, float64(x), float64(y), button)
+		if dragged == 0 {
+			return fmt.Errorf("failed to create mouse drag event")
+		}
+		cgEventPost(cgHIDEventTap, dragged)
+		corefoundation.CFRelease(corefoundation.CFTypeRef(dragged))
+		time.Sleep(interval)
+	}
+
+	mouseUp := cgEventCreateMouseEvent(0, upType, float64(endX), float64(endY), button)
+	if mouseUp == 0 {
+		return fmt.Errorf("failed to create mouse up event")
+	}
+	cgEventPost(cgHIDEventTap, mouseUp)
+	corefoundation.CFRelease(corefoundation.CFTypeRef(mouseUp))
+	return nil
+}
+
+func dragEventTypes(button int32) (downType, draggedType, upType int32, err error) {
+	switch button {
+	case cgMouseButtonLeft:
+		return cgEventLeftMouseDown, cgEventLeftMouseDragged, cgEventLeftMouseUp, nil
+	case cgMouseButtonRight:
+		return cgEventRightMouseDown, cgEventRightMouseDragged, cgEventRightMouseUp, nil
+	default:
+		return 0, 0, 0, fmt.Errorf("unsupported drag button %d", button)
+	}
 }
 
 func scrollLocalPoint(el *axuiautomation.Element, x, y int, direction axuiautomation.ScrollDirection, amount int) error {

@@ -12,6 +12,7 @@ import (
 func registerAXWindowTools(s *mcp.Server) {
 	registerAXWindowClick(s)
 	registerAXWindowHover(s)
+	registerAXWindowDrag(s)
 	registerAXWindowMove(s)
 	registerAXWindowRaise(s)
 	registerAXWindowAction(s)
@@ -46,6 +47,46 @@ func registerAXWindowClick(s *mcp.Server) {
 			return nil, nil, fmt.Errorf("click %s at local %d,%d: %w", desc, args.X, args.Y, err)
 		}
 		return textResult(windowPointResult("clicked", desc, args.X, args.Y)), nil, nil
+	})
+}
+
+// ── ax_window_drag ────────────────────────────────────────────────────────────
+
+type axWindowDragInput struct {
+	App    string `json:"app"`
+	Window string `json:"window,omitempty"`
+	StartX int    `json:"start_x"`
+	StartY int    `json:"start_y"`
+	EndX   int    `json:"end_x"`
+	EndY   int    `json:"end_y"`
+	Button string `json:"button,omitempty"`
+}
+
+func registerAXWindowDrag(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ax_window_drag",
+		Description: `Drag between two points in an application window using local coordinates from the window's top-left corner. ` +
+			`Useful with OCR or screenshot coordinates when you need drag-and-drop or scrubber interactions. ` +
+			`Button can be "left" or "right" and defaults to "left".`,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axWindowDragInput) (*mcp.CallToolResult, any, error) {
+		app, err := spinAndOpen(args.App)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer app.Close()
+
+		win, desc, err := resolveWindow(app, args.Window)
+		if err != nil {
+			return nil, nil, err
+		}
+		button, err := parseMouseButton(args.Button)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := dragLocalPoint(win, args.StartX, args.StartY, args.EndX, args.EndY, button); err != nil {
+			return nil, nil, fmt.Errorf("drag %s from local %d,%d to %d,%d: %w", desc, args.StartX, args.StartY, args.EndX, args.EndY, err)
+		}
+		return textResult(fmt.Sprintf("dragged %s from local %d,%d to %d,%d", desc, args.StartX, args.StartY, args.EndX, args.EndY)), nil, nil
 	})
 }
 

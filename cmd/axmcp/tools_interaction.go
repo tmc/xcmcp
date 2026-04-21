@@ -13,6 +13,9 @@ import (
 
 func registerAXInteractionTools(s *mcp.Server) {
 	registerAXScroll(s)
+	registerAXDrag(s)
+	registerAXZoom(s)
+	registerAXPinch(s)
 	registerAXActionScreenshot(s)
 	registerAXOCRActionDiff(s)
 	registerAXOCRClick(s)
@@ -66,6 +69,56 @@ func registerAXScroll(s *mcp.Server) {
 	})
 }
 
+// ── ax_drag ───────────────────────────────────────────────────────────────────
+
+type axDragInput struct {
+	App      string `json:"app"`
+	Contains string `json:"contains,omitempty"`
+	Role     string `json:"role,omitempty"`
+	StartX   *int   `json:"start_x,omitempty"`
+	StartY   *int   `json:"start_y,omitempty"`
+	EndX     int    `json:"end_x"`
+	EndY     int    `json:"end_y"`
+	Button   string `json:"button,omitempty"`
+}
+
+func registerAXDrag(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ax_drag",
+		Description: `Drag inside an element or window in an app using local coordinates. ` +
+			`Set contains/role to target a specific element; otherwise uses the first window. ` +
+			`If start_x/start_y are omitted, drags from the preferred point or center. ` +
+			`Button can be "left" or "right" and defaults to "left".`,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axDragInput) (*mcp.CallToolResult, any, error) {
+		if (args.StartX == nil) != (args.StartY == nil) {
+			return nil, nil, fmt.Errorf("start_x and start_y must be provided together")
+		}
+		app, err := spinAndOpen(args.App)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer app.Close()
+
+		el, desc, err := resolveTarget(app, args.Contains, args.Role)
+		if err != nil {
+			return nil, nil, err
+		}
+		snapshot := snapshotElement(el, 0, 0)
+		startX, startY, err := dragStartPoint(snapshot, args.StartX, args.StartY)
+		if err != nil {
+			return nil, nil, fmt.Errorf("drag %s: %w", desc, err)
+		}
+		button, err := parseMouseButton(args.Button)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := dragLocalPoint(el, startX, startY, args.EndX, args.EndY, button); err != nil {
+			return nil, nil, fmt.Errorf("drag %s from %d,%d to %d,%d: %w", desc, startX, startY, args.EndX, args.EndY, err)
+		}
+		return textResult(fmt.Sprintf("dragged %s from %d,%d to %d,%d", desc, startX, startY, args.EndX, args.EndY)), nil, nil
+	})
+}
+
 // ── ax_double_click ───────────────────────────────────────────────────────────
 
 type axDoubleClickInput struct {
@@ -108,6 +161,65 @@ func registerAXDoubleClick(s *mcp.Server) {
 		var buf bytes.Buffer
 		buf.WriteString(doubleClickSummary)
 		if note := selectionReason(result); note != "" {
+			fmt.Fprintf(&buf, "\n%s", note)
+		}
+		return textResult(buf.String()), nil, nil
+	})
+}
+
+// ── ax_zoom ───────────────────────────────────────────────────────────────────
+
+type axZoomInput struct {
+	App      string `json:"app"`
+	Contains string `json:"contains,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Action   string `json:"action"`
+}
+
+func registerAXZoom(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ax_zoom",
+		Description: `Apply a standard content zoom shortcut to an app or focused element. ` +
+			`Supported actions: "in", "out", "reset". ` +
+			`When contains/role are provided, focuses that target first. ` +
+			`This uses common zoom shortcuts because public macOS APIs do not expose generic cross-process magnify gesture injection.`,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axZoomInput) (*mcp.CallToolResult, any, error) {
+		desc, note, err := performZoomShortcut(args.App, args.Contains, args.Role, args.Action)
+		if err != nil {
+			return nil, nil, err
+		}
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "zoomed %s on %s", strings.ToLower(args.Action), desc)
+		if note != "" {
+			fmt.Fprintf(&buf, "\n%s", note)
+		}
+		return textResult(buf.String()), nil, nil
+	})
+}
+
+// ── ax_pinch ──────────────────────────────────────────────────────────────────
+
+type axPinchInput struct {
+	App       string `json:"app"`
+	Contains  string `json:"contains,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Direction string `json:"direction"`
+}
+
+func registerAXPinch(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ax_pinch",
+		Description: `Apply pinch-style zoom semantics to an app or focused element. ` +
+			`Supported directions: "in", "out". ` +
+			`The current implementation uses standard zoom shortcuts because public macOS APIs do not expose generic cross-process magnify gesture injection.`,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args axPinchInput) (*mcp.CallToolResult, any, error) {
+		desc, note, err := performZoomShortcut(args.App, args.Contains, args.Role, args.Direction)
+		if err != nil {
+			return nil, nil, err
+		}
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "pinched %s on %s", strings.ToLower(args.Direction), desc)
+		if note != "" {
 			fmt.Fprintf(&buf, "\n%s", note)
 		}
 		return textResult(buf.String()), nil, nil
@@ -203,19 +315,21 @@ var knownKeys = map[string]uint16{
 	// Numbers
 	"0": 0x1D, "1": 0x12, "2": 0x13, "3": 0x14, "4": 0x15,
 	"5": 0x17, "6": 0x16, "7": 0x1A, "8": 0x1C, "9": 0x19,
+	// Punctuation commonly used in app shortcuts.
+	"-": 0x1B, "=": 0x18,
 }
 
 func registerAXKeyStroke(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "ax_keystroke",
 		Description: `Send a keyboard shortcut or key press. Key can be a letter, number, or special key ` +
-			`(return, tab, escape, delete, up, down, left, right, space, home, end, pageup, pagedown, f1-f12). ` +
+			`(return, tab, escape, delete, up, down, left, right, space, home, end, pageup, pagedown, f1-f12, -, =). ` +
 			`Combine with modifier flags for shortcuts like Cmd+S (key="s", command=true).`,
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args axKeyStrokeInput) (*mcp.CallToolResult, any, error) {
 		keyName := strings.ToLower(args.Key)
 		code, ok := knownKeys[keyName]
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown key %q; supported: letters, numbers, return, tab, escape, delete, arrows, space, home, end, pageup, pagedown, f1-f12", args.Key)
+			return nil, nil, fmt.Errorf("unknown key %q; supported: letters, numbers, return, tab, escape, delete, arrows, space, home, end, pageup, pagedown, f1-f12, -, =", args.Key)
 		}
 		if err := axuiautomation.SendKeyCombo(code, args.Shift, args.Control, args.Option, args.Command); err != nil {
 			return nil, nil, fmt.Errorf("keystroke: %w", err)
@@ -298,6 +412,94 @@ func parseDirection(s string) (axuiautomation.ScrollDirection, error) {
 		return axuiautomation.ScrollRight, nil
 	default:
 		return 0, fmt.Errorf("invalid direction %q; use up, down, left, or right", s)
+	}
+}
+
+func parseMouseButton(s string) (int32, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "left":
+		return cgMouseButtonLeft, nil
+	case "right":
+		return cgMouseButtonRight, nil
+	default:
+		return 0, fmt.Errorf("invalid button %q; use left or right", s)
+	}
+}
+
+func dragStartPoint(snapshot elementSnapshot, startX, startY *int) (int, int, error) {
+	if startX != nil && startY != nil {
+		return *startX, *startY, nil
+	}
+	if x, y, ok := preferredClickPoint(snapshot); ok {
+		return x, y, nil
+	}
+	if x, y, ok := centerClickPoint(snapshot); ok {
+		return x, y, nil
+	}
+	return 0, 0, fmt.Errorf("no usable drag start point")
+}
+
+func performZoomShortcut(appName, contains, role, action string) (desc, note string, err error) {
+	app, err := spinAndOpen(appName)
+	if err != nil {
+		return "", "", err
+	}
+	defer app.Close()
+
+	if contains != "" || role != "" {
+		el, targetDesc, err := resolveTarget(app, contains, role)
+		if err != nil {
+			return "", "", err
+		}
+		if err := focusElement(el); err != nil {
+			return "", "", fmt.Errorf("focus %s: %w", targetDesc, err)
+		}
+		desc = targetDesc
+	} else {
+		win, targetDesc, err := resolveWindow(app, "")
+		if err != nil {
+			return "", "", err
+		}
+		if err := win.Raise(); err != nil {
+			return "", "", fmt.Errorf("raise %s: %w", targetDesc, err)
+		}
+		desc = targetDesc
+	}
+
+	if err := sendZoomShortcut(action); err != nil {
+		return "", "", err
+	}
+	note = "used the standard app zoom shortcut; public macOS APIs do not expose a generic cross-process magnify gesture injector"
+	return desc, note, nil
+}
+
+func sendZoomShortcut(action string) error {
+	spec, err := zoomShortcutForAction(action)
+	if err != nil {
+		return err
+	}
+	if err := axuiautomation.SendKeyCombo(spec.keyCode, spec.shift, false, false, true); err != nil {
+		return fmt.Errorf("zoom %s: %w", spec.label, err)
+	}
+	return nil
+}
+
+type zoomShortcut struct {
+	keyCode uint16
+	shift   bool
+	label   string
+}
+
+func zoomShortcutForAction(action string) (zoomShortcut, error) {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "in", "zoom_in", "pinch_in":
+		return zoomShortcut{keyCode: knownKeys["="], shift: true, label: "in"}, nil
+	case "out", "zoom_out", "pinch_out":
+		return zoomShortcut{keyCode: knownKeys["-"], label: "out"}, nil
+	case "reset", "actual", "actual_size":
+		return zoomShortcut{keyCode: knownKeys["0"], label: "reset"}, nil
+	default:
+		return zoomShortcut{}, fmt.Errorf("invalid zoom action %q; use in, out, or reset", action)
 	}
 }
 

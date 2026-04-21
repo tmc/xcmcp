@@ -129,3 +129,111 @@ func TestWindowPointResultFormatting(t *testing.T) {
 		t.Fatalf("windowPointResult(hover) = %q", got)
 	}
 }
+
+func TestDragStartPoint(t *testing.T) {
+	startX := 3
+	startY := 7
+	tests := []struct {
+		name     string
+		snapshot elementSnapshot
+		startX   *int
+		startY   *int
+		wantX    int
+		wantY    int
+		wantErr  bool
+	}{
+		{
+			name:     "explicit start wins",
+			snapshot: elementSnapshot{record: elementRecord{role: "AXRow", w: 120, h: 28}},
+			startX:   &startX,
+			startY:   &startY,
+			wantX:    3,
+			wantY:    7,
+		},
+		{
+			name:     "preferred row point",
+			snapshot: elementSnapshot{record: elementRecord{role: "AXRow", w: 120, h: 28}},
+			wantX:    12,
+			wantY:    14,
+		},
+		{
+			name:     "falls back to center",
+			snapshot: elementSnapshot{record: elementRecord{role: "AXButton", w: 120, h: 28}},
+			wantX:    60,
+			wantY:    14,
+		},
+		{
+			name:     "no usable point",
+			snapshot: elementSnapshot{record: elementRecord{role: "AXButton", w: 0, h: 0}},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotX, gotY, err := dragStartPoint(tt.snapshot, tt.startX, tt.startY)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("dragStartPoint error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if gotX != tt.wantX || gotY != tt.wantY {
+				t.Fatalf("dragStartPoint = (%d,%d), want (%d,%d)", gotX, gotY, tt.wantX, tt.wantY)
+			}
+		})
+	}
+}
+
+func TestParseMouseButton(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    int32
+		wantErr bool
+	}{
+		{input: "", want: cgMouseButtonLeft},
+		{input: "left", want: cgMouseButtonLeft},
+		{input: "right", want: cgMouseButtonRight},
+		{input: "middle", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := parseMouseButton(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("parseMouseButton(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+		}
+		if tt.wantErr {
+			continue
+		}
+		if got != tt.want {
+			t.Fatalf("parseMouseButton(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestZoomShortcutForAction(t *testing.T) {
+	tests := []struct {
+		action    string
+		wantKey   uint16
+		wantShift bool
+		wantErr   bool
+	}{
+		{action: "in", wantKey: knownKeys["="], wantShift: true},
+		{action: "out", wantKey: knownKeys["-"]},
+		{action: "reset", wantKey: knownKeys["0"]},
+		{action: "bogus", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := zoomShortcutForAction(tt.action)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("zoomShortcutForAction(%q) error = %v, wantErr %v", tt.action, err, tt.wantErr)
+		}
+		if tt.wantErr {
+			continue
+		}
+		if got.keyCode != tt.wantKey || got.shift != tt.wantShift {
+			t.Fatalf("zoomShortcutForAction(%q) = {%d %v}, want {%d %v}", tt.action, got.keyCode, got.shift, tt.wantKey, tt.wantShift)
+		}
+	}
+}
