@@ -39,7 +39,7 @@ Everything is toolset-gated, so you only load what you need:
 ```sh
 xcmcp --enable-all           # every toolset on
 xcmcp --enable-ui-tools      # just UI automation of the sim
-xcmcp --enable-asc           # App Store Connect + altool
+xcmcp --enable-asc-tools     # App Store Connect + altool
 ```
 
 Or turn toolsets on and off dynamically inside a session via `list_toolsets` and `enable_toolset`.
@@ -52,25 +52,80 @@ Or turn toolsets on and off dynamically inside a session via `list_toolsets` and
 - Accessibility permission for commands that drive the UI: `axmcp`, `ax`, `xcmcp`, `xc`, `computer-use-mcp`.
 - A booted simulator or connected device for simulator and device workflows.
 
-## Install
+## Setup
 
-Build the commands you need:
+Follow these steps in order. Every command is safe to run unattended.
 
-```sh
-go install ./cmd/xcmcp ./cmd/xc ./cmd/ax ./cmd/axmcp ./cmd/ascript ./cmd/ascriptmcp ./cmd/computer-use-mcp
-```
+### 1. Install the binaries
 
-Or build the whole module:
+From a clone of this repo:
 
 ```sh
-go build ./...
+go install ./cmd/axmcp ./cmd/xcmcp ./cmd/computer-use-mcp ./cmd/ax ./cmd/xc ./cmd/ascript ./cmd/ascriptmcp ./cmd/tcc-harness
 ```
 
-## Granting Accessibility permission
+Or directly from the module path without cloning:
 
-macOS gates every pointer, keystroke, and AX tree read behind explicit user consent. The first time a binary issues an AX call, macOS refuses and logs the binary as a candidate in **System Settings → Privacy & Security → Accessibility**. Toggle the entry on.
+```sh
+go install github.com/tmc/axmcp/cmd/axmcp@latest
+go install github.com/tmc/axmcp/cmd/xcmcp@latest
+go install github.com/tmc/axmcp/cmd/computer-use-mcp@latest
+go install github.com/tmc/axmcp/cmd/ax@latest
+go install github.com/tmc/axmcp/cmd/xc@latest
+go install github.com/tmc/axmcp/cmd/tcc-harness@latest
+```
 
-If an action silently no-ops or returns "not permitted," this is usually the cause. The `cmd/tcc-harness` binary exists specifically to probe the TCC (Transparency, Consent, and Control) state without mutating anything, so you can diagnose before you automate.
+`go install` writes to `$(go env GOPATH)/bin` (default `$HOME/go/bin`), or `$(go env GOBIN)` if set.
+
+### 2. Put the install directory on `PATH`
+
+```sh
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+Add that line to your shell rc if you want it permanent. Verify:
+
+```sh
+command -v axmcp xcmcp computer-use-mcp xc ax
+```
+
+Five absolute paths should print. If any are missing, step 1 failed for that binary.
+
+### 3. Note the absolute binary paths for your MCP client
+
+```sh
+echo "AXMCP=$(command -v axmcp)"
+echo "XCMCP=$(command -v xcmcp)"
+echo "COMPUTER_USE_MCP=$(command -v computer-use-mcp)"
+```
+
+You will paste these exact paths into your MCP client config in step 5.
+
+### 4. Grant Accessibility permission
+
+macOS refuses every pointer, keystroke, and AX tree call until the calling binary is explicitly approved in **System Settings → Privacy & Security → Accessibility**.
+
+The first time any of `axmcp`, `xcmcp`, `ax`, `xc`, or `computer-use-mcp` issues an AX call, macOS refuses and adds the binary as an unchecked row in that pane. Open it and toggle each entry on. `tcc-harness` is a read-only probe you can run first to check state without mutating anything:
+
+```sh
+tcc-harness --help
+```
+
+If an action later no-ops silently or returns "not permitted," the entry was probably turned off again by a software update — re-check the toggle.
+
+### 5. Register the servers with your MCP client
+
+See **MCP client configuration** below for ready-to-paste snippets for Claude Code, Cursor, Zed, and the raw JSON schema.
+
+### 6. Verify the server surfaces are reachable
+
+Once your client has loaded the config, confirm the tools showed up. A quick sanity check outside any client:
+
+```sh
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | axmcp 2>/dev/null | head -c 400
+```
+
+Non-empty JSON with a `"tools"` array means the binary is healthy and its stdio MCP transport is wired up.
 
 ## Quick Start
 
@@ -112,26 +167,66 @@ Exposes exactly `list_apps`, `get_app_state`, `click`, `perform_secondary_action
 
 ## MCP client configuration
 
-Register one or all three servers:
+All three servers speak MCP over stdio. In every config below, replace `/Users/you/go/bin/...` with the absolute paths you printed in setup step 3.
+
+### Claude Code
+
+```sh
+claude mcp add axmcp /Users/you/go/bin/axmcp
+claude mcp add xcmcp /Users/you/go/bin/xcmcp -- --enable-all
+claude mcp add computer-use-mcp /Users/you/go/bin/computer-use-mcp
+```
+
+Or edit `~/.claude.json` directly:
 
 ```json
 {
   "mcpServers": {
-    "axmcp": {
-      "command": "/absolute/path/to/axmcp"
-    },
-    "xcmcp": {
-      "command": "/absolute/path/to/xcmcp",
-      "args": ["--enable-ui-tools", "--enable-device-tools", "--enable-ios-tools"]
-    },
-    "computer-use-mcp": {
-      "command": "/absolute/path/to/computer-use-mcp"
-    }
+    "axmcp": { "command": "/Users/you/go/bin/axmcp" },
+    "xcmcp": { "command": "/Users/you/go/bin/xcmcp", "args": ["--enable-all"] },
+    "computer-use-mcp": { "command": "/Users/you/go/bin/computer-use-mcp" }
   }
 }
 ```
 
-Within a session, use `list_toolsets` and `enable_toolset` to turn optional `xcmcp` toolsets on and off dynamically.
+### Cursor
+
+Edit `~/.cursor/mcp.json` (same schema as above):
+
+```json
+{
+  "mcpServers": {
+    "axmcp": { "command": "/Users/you/go/bin/axmcp" },
+    "xcmcp": { "command": "/Users/you/go/bin/xcmcp", "args": ["--enable-all"] },
+    "computer-use-mcp": { "command": "/Users/you/go/bin/computer-use-mcp" }
+  }
+}
+```
+
+### Zed
+
+Edit `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "axmcp": { "command": { "path": "/Users/you/go/bin/axmcp", "args": [] } },
+    "xcmcp": { "command": { "path": "/Users/you/go/bin/xcmcp", "args": ["--enable-all"] } },
+    "computer-use-mcp": { "command": { "path": "/Users/you/go/bin/computer-use-mcp", "args": [] } }
+  }
+}
+```
+
+### Any other MCP client
+
+Point it at the absolute binary path with stdio transport. Optional arguments for `xcmcp`:
+
+- `--enable-all` — turn every optional toolset on
+- `--enable-ui-tools --enable-device-tools --enable-ios-tools` — pick toolsets individually
+- `--enable-asc-tools` — App Store Connect + altool
+- `--wait-for-xcode=0s` — skip waiting for Xcode at startup (for headless/CI use)
+
+Within a session, `list_toolsets` and `enable_toolset` turn optional `xcmcp` toolsets on and off without restarting.
 
 ## Commands
 
