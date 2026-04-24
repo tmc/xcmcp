@@ -16,6 +16,7 @@ import (
 	"github.com/tmc/apple/appkit"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/axmcp/internal/cmdflag"
+	"github.com/tmc/axmcp/internal/computeruse/intervention"
 	"github.com/tmc/axmcp/internal/ghostcursor"
 	"github.com/tmc/axmcp/internal/macsigning"
 	"github.com/tmc/axmcp/internal/ui"
@@ -36,6 +37,7 @@ var (
 func main() {
 	runtime.LockOSThread()
 	ghostCursorEnabled := cmdflag.Bool(os.Args[1:], "--ghost-cursor", true)
+	interventionMonitorEnabled := cmdflag.Bool(os.Args[1:], "--human-intervention-monitor", envBool("COMPUTER_USE_MCP_HUMAN_INTERVENTION_MONITOR", false))
 
 	if err := configureLogging(); err != nil {
 		log.Fatalf("configure logging: %v", err)
@@ -63,7 +65,9 @@ func main() {
 		Eyecandy: ghostcursor.DefaultEyecandyConfig(),
 	})
 
-	rt, err := newRuntimeState()
+	rt, err := newRuntimeState(runtimeOptions{
+		intervention: interventionConfig(interventionMonitorEnabled),
+	})
 	if err != nil {
 		log.Fatalf("runtime: %v", err)
 	}
@@ -138,6 +142,28 @@ func configureLogging() error {
 	return nil
 }
 
+func envBool(name string, def bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	switch strings.ToLower(raw) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	case "0", "f", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func interventionConfig(enabled bool) intervention.Config {
+	return intervention.Config{
+		Enabled:     enabled,
+		QuietPeriod: 750 * time.Millisecond,
+	}
+}
+
 func permissionPane(service string) string {
 	switch service {
 	case "Screen Recording":
@@ -177,6 +203,8 @@ func computerUseInstructions() string {
 		"The available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, and set_value. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.",
 		"",
 		"Computer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!",
+		"",
+		"The physical-user intervention monitor is disabled by default. If the server is started with --human-intervention-monitor or COMPUTER_USE_MCP_HUMAN_INTERVENTION_MONITOR=1, recent physical mouse or keyboard input pauses action tools and requires a fresh get_app_state before continuing.",
 		"",
 		"After each action, use the action result or fetch the latest state to verify the UI changed as expected.",
 		"Prefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Note that element indices are the sequential integers from the app state's accessibility tree.",

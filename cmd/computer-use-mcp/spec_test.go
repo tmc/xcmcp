@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/axmcp/internal/computeruse"
+	"github.com/tmc/axmcp/internal/computeruse/intervention"
 )
 
 func TestComputerUseSpecParity(t *testing.T) {
@@ -84,6 +86,23 @@ func TestRequiresRefreshResult(t *testing.T) {
 	}
 	if !strings.Contains(action.Message, "call get_app_state again") {
 		t.Fatalf("Message = %q, want refresh guidance", action.Message)
+	}
+}
+
+func TestActionBlockedForIntervention(t *testing.T) {
+	monitor := intervention.New(intervention.Config{Enabled: true, QuietPeriod: time.Second})
+	monitor.Record("KCGEventKeyDown", time.Now())
+	rt := &runtimeState{intervention: monitor}
+
+	res, payload, ok := actionBlockedForIntervention(rt, "click")
+	if !ok {
+		t.Fatalf("actionBlockedForIntervention ok = false, want true")
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("result = %#v, want tool error", res)
+	}
+	if !payload.RequiresRefresh {
+		t.Fatalf("RequiresRefresh = false, want true")
 	}
 }
 

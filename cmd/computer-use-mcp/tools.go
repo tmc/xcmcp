@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tmc/axmcp/internal/computeruse"
@@ -122,6 +123,9 @@ func registerClick(s *mcp.Server, rt *runtimeState) {
 		if res, payload, ok := actionBlockedForPermissions("click"); ok {
 			return res, payload, nil
 		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "click"); ok {
+			return res, payload, nil
+		}
 		state, ok := rt.sessions.GetForApp(args.App)
 		if !ok {
 			return requiresRefreshResult("click", args.App)
@@ -190,6 +194,9 @@ func registerPerformSecondaryAction(s *mcp.Server, rt *runtimeState) {
 		if res, payload, ok := actionBlockedForPermissions(args.Action); ok {
 			return res, payload, nil
 		}
+		if res, payload, ok := actionBlockedForIntervention(rt, args.Action); ok {
+			return res, payload, nil
+		}
 		state, ok := rt.sessions.GetForApp(args.App)
 		if !ok {
 			return requiresRefreshResult(args.Action, args.App)
@@ -227,6 +234,9 @@ func registerSetValue(s *mcp.Server, rt *runtimeState) {
 		}, "app", "element_index", "value"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args setValueInput) (*mcp.CallToolResult, any, error) {
 		if res, payload, ok := actionBlockedForPermissions("set_value"); ok {
+			return res, payload, nil
+		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "set_value"); ok {
 			return res, payload, nil
 		}
 		state, ok := rt.sessions.GetForApp(args.App)
@@ -269,6 +279,9 @@ func registerScroll(s *mcp.Server, rt *runtimeState) {
 		if res, payload, ok := actionBlockedForPermissions("scroll"); ok {
 			return res, payload, nil
 		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "scroll"); ok {
+			return res, payload, nil
+		}
 		state, ok := rt.sessions.GetForApp(args.App)
 		if !ok {
 			return requiresRefreshResult("scroll", args.App)
@@ -308,6 +321,9 @@ func registerDrag(s *mcp.Server, rt *runtimeState) {
 		}, "app", "from_x", "from_y", "to_x", "to_y"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args dragInput) (*mcp.CallToolResult, any, error) {
 		if res, payload, ok := actionBlockedForPermissions("drag"); ok {
+			return res, payload, nil
+		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "drag"); ok {
 			return res, payload, nil
 		}
 		state, ok := rt.sessions.GetForApp(args.App)
@@ -356,6 +372,9 @@ func registerPressKey(s *mcp.Server, rt *runtimeState) {
 		if res, payload, ok := actionBlockedForPermissions("press_key"); ok {
 			return res, payload, nil
 		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "press_key"); ok {
+			return res, payload, nil
+		}
 		state, ok := rt.sessions.GetForApp(args.App)
 		if !ok {
 			return requiresRefreshResult("press_key", args.App)
@@ -385,6 +404,9 @@ func registerTypeText(s *mcp.Server, rt *runtimeState) {
 		}, "app", "text"),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args typeTextInput) (*mcp.CallToolResult, any, error) {
 		if res, payload, ok := actionBlockedForPermissions("type_text"); ok {
+			return res, payload, nil
+		}
+		if res, payload, ok := actionBlockedForIntervention(rt, "type_text"); ok {
 			return res, payload, nil
 		}
 		state, ok := rt.sessions.GetForApp(args.App)
@@ -479,6 +501,26 @@ func actionBlockedForPermissions(action string) (*mcp.CallToolResult, computerus
 	return textResult(perms.Message), computeruse.ActionResult{
 		Action:  action,
 		Message: perms.Message,
+	}, true
+}
+
+func actionBlockedForIntervention(rt *runtimeState, action string) (*mcp.CallToolResult, computeruse.ActionResult, bool) {
+	if rt == nil || rt.intervention == nil {
+		return nil, computeruse.ActionResult{}, false
+	}
+	status, blocked := rt.intervention.Blocked(time.Now())
+	if !blocked {
+		return nil, computeruse.ActionResult{}, false
+	}
+	wait := status.QuietPeriod - time.Since(status.LastInput)
+	if wait < 0 {
+		wait = 0
+	}
+	msg := fmt.Sprintf("physical user input detected recently (%s); wait %s and call get_app_state again", status.LastType, wait.Round(100*time.Millisecond))
+	return toolError(fmt.Errorf("%s", msg)), computeruse.ActionResult{
+		Action:          action,
+		Message:         msg,
+		RequiresRefresh: true,
 	}, true
 }
 
