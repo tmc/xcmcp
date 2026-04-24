@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServerToolSurfaceWithoutXcode(t *testing.T) {
@@ -93,6 +94,55 @@ func TestToolsetRegistryRejectsDuplicateNames(t *testing.T) {
 		}
 	}()
 	r.add(toolset{name: "device"})
+}
+
+func TestXcodeAddTargetSchemaExposesPlatformAndEmbedIn(t *testing.T) {
+	srv := startTestServer(t, "-enable-xcode-tools=true", "-wait-for-xcode=0s")
+	srv.initialize()
+
+	type toolEntry struct {
+		Name        string         `json:"name"`
+		InputSchema map[string]any `json:"inputSchema"`
+	}
+	type toolsList struct {
+		Tools []toolEntry `json:"tools"`
+	}
+
+	var schema map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := srv.request("tools/list", nil)
+		result := decodeResult[toolsList](t, resp)
+		for _, tool := range result.Tools {
+			if tool.Name == "xcode_add_target" {
+				schema = tool.InputSchema
+				break
+			}
+		}
+		if schema != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if schema == nil {
+		t.Fatal("xcode_add_target not present in tools/list within 5s")
+	}
+
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("xcode_add_target inputSchema has no properties map; got %T", schema["properties"])
+	}
+
+	for _, field := range []string{"platform", "embed_in"} {
+		spec, ok := props[field].(map[string]any)
+		if !ok {
+			t.Fatalf("xcode_add_target inputSchema missing property %q; got %T", field, props[field])
+		}
+		desc, _ := spec["description"].(string)
+		if desc == "" {
+			t.Fatalf("xcode_add_target property %q has empty description", field)
+		}
+	}
 }
 
 func TestDebuggingToolsetEnablement(t *testing.T) {

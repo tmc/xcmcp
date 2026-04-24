@@ -22,12 +22,12 @@ func registerXcodeTargetTools(s *mcp.Server) {
 			"argument (e.g. 'iOS', 'macOS') to disambiguate. For extensions that " +
 			"must be hosted by an app, pass 'embed_in' with the host target name.",
 	}, SafeTool("xcode_add_target", func(ctx context.Context, req *mcp.CallToolRequest, args struct {
-		TemplateName string `json:"template_name" description:"Target template name (e.g. 'Widget Extension', 'App Intent Extension')"`
-		ProductName  string `json:"product_name" description:"Product name for the new target"`
-		BundleID     string `json:"bundle_id,omitempty" description:"Bundle identifier (auto-derived if not specified)"`
-		Team         string `json:"team,omitempty" description:"Development team name to select"`
-		Platform     string `json:"platform,omitempty" description:"Platform tab to select in the template chooser (e.g. 'iOS', 'macOS', 'watchOS', 'tvOS', 'visionOS', 'Multiplatform')"`
-		EmbedIn      string `json:"embed_in,omitempty" description:"Host application target name for the 'Embed in Application' popup"`
+		TemplateName string `json:"template_name" jsonschema:"Target template name (e.g. 'Widget Extension', 'App Intent Extension')"`
+		ProductName  string `json:"product_name" jsonschema:"Product name for the new target"`
+		BundleID     string `json:"bundle_id,omitempty" jsonschema:"Bundle identifier (auto-derived if not specified)"`
+		Team         string `json:"team,omitempty" jsonschema:"Development team name to select"`
+		Platform     string `json:"platform,omitempty" jsonschema:"Platform tab to select in the template chooser (e.g. 'iOS', 'macOS', 'watchOS', 'tvOS', 'visionOS', 'Multiplatform')"`
+		EmbedIn      string `json:"embed_in,omitempty" jsonschema:"Host application target name for the 'Embed in Application' popup"`
 	}) (*mcp.CallToolResult, SimulatorActionOutput, error) {
 		if args.TemplateName == "" {
 			return errResult("template_name is required"), SimulatorActionOutput{}, nil
