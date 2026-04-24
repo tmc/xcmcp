@@ -1,24 +1,30 @@
 # axmcp
 
-`axmcp` is a macOS toolkit built around two complementary MCP servers:
+**Drive macOS apps the way a human does — through the Accessibility API, from an MCP client.**
 
-- `cmd/axmcp` for direct macOS Accessibility automation, OCR-assisted interaction, screenshots, and window control.
-- `cmd/xcmcp` for Xcode projects, builds, tests, simulators, devices, previews, and IDE-facing workflows.
+`axmcp` is a macOS automation toolkit built around three MCP servers and matching CLIs. It lets an LLM (or a shell script) inspect and operate native apps, Xcode projects, and iOS simulators with the same primitives Apple's own assistive technologies use.
 
-The repository also includes companion CLIs built on the same packages:
+| Server | What it drives | Shape |
+| --- | --- | --- |
+| `cmd/axmcp` | Any running macOS app via AX tree, OCR, pointer, keyboard, windows | Open primitive surface |
+| `cmd/xcmcp` | Xcode, simulators, physical devices, previews, App Store Connect | Toolset-gated, ~40 tools on demand |
+| `cmd/computer-use-mcp` | Codex Computer Use contract on top of axmcp primitives | Exactly the 9-tool spec, session-stateful |
 
-- `cmd/ax` for direct terminal access to the macOS Accessibility API.
-- `cmd/xc` for terminal access to Xcode, simulator, device, and UI workflows.
-- `cmd/ascript` and `cmd/ascriptmcp` for AppleScript dictionaries and scriptable applications.
+If you want an LLM to click through a real app: `axmcp`. If you want it to build, test, boot a simulator, or add an Xcode target via the File > New UI: `xcmcp`. If you need a drop-in for the Codex Computer Use tool contract: `computer-use-mcp`.
 
-If you need to drive native macOS apps, start with `axmcp`. If you need to inspect or operate on Xcode projects and Apple development tooling, start with `xcmcp`.
+## Why this exists
+
+- **Accessibility-first, not screenshot-first.** Pointer actions target AX elements by role and title, so an LLM can say "click the Build button" and get the actual button — not the pixel that looked right a moment ago.
+- **OCR and screenshots are the fallback, not the plan.** `ax_ocr`, `ax_ocr_diff`, and `ax_ocr_click` exist for Electron apps, custom canvases, and partially inaccessible UI. They ride on top of the AX flow, not around it.
+- **The hard Xcode moves are scripted.** `xcode_add_target` drives the File > New > Target wizard end-to-end, including the platform tab, template picker, and "Embed in Application" popup, then verifies the new scheme landed on disk.
+- **One repo, three audiences.** The primitive surface (`axmcp`) is for open exploration; the Codex contract (`computer-use-mcp`) is for drop-in replacement; the Xcode surface (`xcmcp`) is the IDE-adjacent tool belt. They share one set of internal packages so behavior stays consistent.
 
 ## Requirements
 
 - macOS with Xcode installed.
 - Command Line Tools available through `xcrun`.
 - Go 1.26 or newer to build from source.
-- Accessibility permission for commands that drive the UI, including `axmcp`, `ax`, `xcmcp`, and `xc`.
+- Accessibility permission for commands that drive the UI: `axmcp`, `ax`, `xcmcp`, `xc`, `computer-use-mcp`.
 - A booted simulator or connected device for simulator and device workflows.
 
 ## Install
@@ -26,38 +32,40 @@ If you need to drive native macOS apps, start with `axmcp`. If you need to inspe
 Build the commands you need:
 
 ```sh
-go install ./cmd/xcmcp ./cmd/xc ./cmd/ax ./cmd/axmcp ./cmd/ascript ./cmd/ascriptmcp
+go install ./cmd/xcmcp ./cmd/xc ./cmd/ax ./cmd/axmcp ./cmd/ascript ./cmd/ascriptmcp ./cmd/computer-use-mcp
 ```
 
-Or build everything in the module:
+Or build the whole module:
 
 ```sh
 go build ./...
 ```
 
+## Granting Accessibility permission
+
+macOS gates every pointer, keystroke, and AX tree read behind explicit user consent. The first time a binary issues an AX call, macOS refuses and logs the binary as a candidate in **System Settings → Privacy & Security → Accessibility**. Toggle the entry on.
+
+If an action silently no-ops or returns "not permitted," this is usually the cause. The `cmd/tcc-harness` binary exists specifically to probe the TCC (Transparency, Consent, and Control) state without mutating anything, so you can diagnose before you automate.
+
 ## Quick Start
 
-Run the Accessibility MCP server:
+**Drive any running app:**
 
 ```sh
 axmcp
 ```
 
-`axmcp` exposes direct macOS UI automation tools, including AX tree inspection, text lookup, screenshots, OCR, pointer actions, keyboard input, and window operations.
+Exposes `ax_apps`, `ax_tree`, `ax_find`, `ax_focus`, `ax_click`, `ax_drag`, `ax_type`, `ax_menu`, `ax_set_value`, `ax_perform_action`, `ax_keystroke`, `ax_zoom`, `ax_pinch`, `ax_screenshot`, `ax_ocr`, `ax_ocr_diff`, `ax_action_screenshot`, `ax_ocr_action_diff`, `ax_ocr_click`, `ax_ocr_hover`, plus window-scoped variants (`ax_window_*`).
 
-Run the Xcode and simulator MCP server:
+**Work with Xcode and simulators:**
 
 ```sh
 xcmcp
 ```
 
-`xcmcp` starts with:
+Always-on: `discover_projects`, `list_schemes`, `show_build_settings`, `build`, `test`, `list_simulators`, `boot_simulator`, `shutdown_simulator`, `xcode_add_target`, `list_toolsets`, `enable_toolset`. The Xcode bridge toolset (IDE-facing tools from `xcrun mcpbridge`) is enabled by default.
 
-- core project, build, test, simulator, and Xcode target tools
-- MCP resources
-- Xcode bridge tools via `xcrun mcpbridge`
-
-Optional toolsets can be enabled at startup:
+Optional toolsets are loaded on demand:
 
 ```sh
 xcmcp --enable-ui-tools --enable-device-tools --enable-ios-tools
@@ -69,7 +77,17 @@ Or all at once:
 xcmcp --enable-all
 ```
 
-An MCP client configuration can register either server or both:
+**Drop-in Codex Computer Use contract:**
+
+```sh
+computer-use-mcp
+```
+
+Exposes exactly `list_apps`, `get_app_state`, `click`, `perform_secondary_action`, `set_value`, `scroll`, `drag`, `press_key`, `type_text`. Call `get_app_state` once per turn, then act against `element_index` strings from the snapshot.
+
+## MCP client configuration
+
+Register one or all three servers:
 
 ```json
 {
@@ -79,60 +97,36 @@ An MCP client configuration can register either server or both:
     },
     "xcmcp": {
       "command": "/absolute/path/to/xcmcp",
-      "args": [
-        "--enable-ui-tools",
-        "--enable-device-tools",
-        "--enable-ios-tools"
-      ]
+      "args": ["--enable-ui-tools", "--enable-device-tools", "--enable-ios-tools"]
+    },
+    "computer-use-mcp": {
+      "command": "/absolute/path/to/computer-use-mcp"
     }
   }
 }
 ```
 
-Within a session, optional toolsets can also be enabled dynamically with `list_toolsets` and `enable_toolset`.
+Within a session, use `list_toolsets` and `enable_toolset` to turn optional `xcmcp` toolsets on and off dynamically.
 
 ## Commands
 
 ### `axmcp`
 
-`axmcp` is the Accessibility-first MCP server. It targets running macOS applications directly through the Accessibility API, with OCR and screenshot fallbacks for custom-drawn or partially inaccessible UIs.
+`axmcp` is the open Accessibility surface. It targets running macOS applications directly through the Accessibility API, with OCR and screenshot fallbacks for custom-drawn or partially inaccessible UIs.
 
-Representative tools include:
-
-- `ax_apps`, `ax_tree`, `ax_find`, `ax_focus`
-- `ax_click`, `ax_drag`, `ax_type`, `ax_menu`, `ax_set_value`, `ax_perform_action`, `ax_keystroke`, `ax_zoom`, `ax_pinch`
-- `ax_screenshot`, `ax_ocr`, `ax_ocr_diff`, `ax_action_screenshot`, `ax_ocr_action_diff`
-- `ax_window_click`, `ax_window_drag`, `ax_window_hover`, `ax_window_move`, `ax_window_raise`, `ax_window_action`
+Primitive tools cover element discovery, pointer and keyboard input, window manipulation, screenshots, and OCR-driven interactions.
 
 ### `computer-use-mcp`
 
-`computer-use-mcp` is the stateful, session-oriented compatibility server. It keeps the narrow Codex Computer Use tool contract on top of macOS accessibility and screenshot capture.
+`computer-use-mcp` is the stateful, session-oriented compatibility server. It holds the narrow Codex Computer Use tool contract on top of the same accessibility and screenshot primitives.
 
-It exposes exactly these tools:
-
-- `list_apps`, `get_app_state`
-- `click`, `perform_secondary_action`, `set_value`, `scroll`, `drag`
-- `press_key`, `type_text`
-
-It is tools-only: it does not publish MCP resources or resource templates.
-
-Call `get_app_state` once per assistant turn before using the action tools. The action surface is app-scoped, and indexed element references are passed as string `element_index` values.
+It is tools-only — no MCP resources, no resource templates. The tool surface is app-scoped: call `get_app_state` first, then pass returned `element_index` strings to the action tools.
 
 ### `xcmcp`
 
 `xcmcp` serves tools and resources over stdio.
 
-Always-on native tools include:
-
-- `discover_projects`, `list_schemes`, `show_build_settings`
-- `build`, `test`
-- `list_simulators`, `boot_simulator`, `shutdown_simulator`
-- `xcode_add_target`
-- `list_toolsets`, `enable_toolset`
-
-The Xcode bridge toolset is enabled by default and adds IDE-facing tools discovered from `xcrun mcpbridge`.
-
-Optional toolsets include:
+Optional toolsets:
 
 - `app`: app lifecycle, install, uninstall, logs, and app listing
 - `ui`: UI tree, tap, inspect, query, screenshot, and wait
@@ -148,9 +142,7 @@ Optional toolsets include:
 
 ### `xc`
 
-`xc` exposes the same building blocks as a direct CLI.
-
-Examples:
+`xc` exposes the same building blocks as a direct CLI:
 
 ```sh
 xc sims list
@@ -159,14 +151,12 @@ xc test --scheme MyApp
 xc app launch com.example.MyApp --udid booted
 xc ui tree --bundle-id com.apple.finder
 xc ios tree --udid booted
-xc xcode add-target --template "Widget Extension" --product MyWidget
+xc xcode add-target --template "Widget Extension" --product MyWidget --platform iOS
 ```
 
 ### `ax`
 
-`ax` is the direct CLI companion to `axmcp`.
-
-Examples:
+`ax` is the direct CLI companion to `axmcp`:
 
 ```sh
 ax apps
@@ -176,9 +166,7 @@ ax find com.apple.dt.Xcode --role AXButton --title Build
 
 ### `ascript` and `ascriptmcp`
 
-These commands inspect scriptable applications and run AppleScript-backed operations.
-
-Examples:
+These commands inspect scriptable applications and run AppleScript-backed operations:
 
 ```sh
 ascript list /Applications/Xcode.app
@@ -188,7 +176,7 @@ ascript script /Applications/Finder.app activate
 
 ## Resources
 
-`xcmcp` currently registers these MCP resources by default:
+`xcmcp` registers these MCP resources by default:
 
 - `xcmcp://project`
 - `xcmcp://simulators`
@@ -196,27 +184,29 @@ ascript script /Applications/Finder.app activate
 - `xcmcp://apps/{bundle_id}/tree`
 - `xcmcp://apps/{bundle_id}/logs`
 
-## Internal Layout
+## Internal layout
 
-This module is command-first. The reusable helper packages live under `internal/` and are not intended as a public import surface.
+This module is command-first. Reusable helpers live under `internal/` and are not intended as a public import surface.
 
-The main internal packages are:
-
-- `internal/project`: discover Xcode projects and inspect schemes and build settings
+- `internal/project`: discover Xcode projects, inspect schemes and build settings
 - `internal/xcodebuild`: build and test wrappers
+- `internal/xcodewizard`: File > New > Target wizard automation, shared by `xc` and `xcmcp`
 - `internal/simctl`: simulator management through `xcrun simctl`
 - `internal/devicectl`: physical device management
 - `internal/ui`: macOS Accessibility access and UI screenshots
 - `internal/screen`: screen capture helpers
+- `internal/ghostcursor`: animated cursor overlay for demonstration and recording
+- `internal/computeruse`: shared primitives behind `computer-use-mcp` (app state, input, coords, policy, session, approval, intervention)
 - `internal/crash`: crash report listing and reading
 - `internal/resources`: MCP resource registration
 - `internal/sdef`: parser for AppleScript scripting definitions
 - `internal/altool` and `internal/asc`: App Store Connect helpers
+- `internal/tccprompt`: TCC permission prompt inspection (used by `cmd/tcc-harness`)
 
 ## Notes
 
 - This repository targets macOS. Many packages use AppKit, Accessibility, or Apple developer tools directly.
-- The repository name is `axmcp`, but it intentionally contains both `axmcp` and `xcmcp`. They cover different layers of the same workflow surface.
+- The repository name is `axmcp`, but it intentionally contains `axmcp`, `xcmcp`, and `computer-use-mcp`. They cover different layers of the same workflow surface.
 - UI automation depends on macOS Accessibility permission and on the target app being reachable through the Accessibility tree.
 - Some simulator and Xcode automation features rely on private or implementation-defined behavior and are best treated as developer tooling rather than a stable public protocol.
-- The supported entry points are the commands in `cmd/`. The internal packages may change without notice.
+- The supported entry points are the commands in `cmd/`. Internal packages may change without notice.
