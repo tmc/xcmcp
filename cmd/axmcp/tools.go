@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"github.com/tmc/apple/coregraphics"
 	"github.com/tmc/apple/x/axuiautomation"
 	"github.com/tmc/axmcp/internal/ghostcursor"
+	"github.com/tmc/axmcp/internal/spacedetect"
 	"github.com/tmc/axmcp/internal/ui"
 )
 
@@ -924,6 +926,7 @@ func registerAXListWindows(s *mcp.Server) {
 			Height    int    `json:"height"`
 			Display   int    `json:"display"`
 			OffScreen bool   `json:"off_screen,omitempty"`
+			OffSpace  bool   `json:"off_space,omitempty"`
 		}
 
 		displays := activeDisplayBounds()
@@ -951,7 +954,7 @@ func registerAXListWindows(s *mcp.Server) {
 				return nil, nil, fmt.Errorf("no windows found for %q via AX or CGWindowList — the app may have windows on another Space or display", args.App)
 			}
 			for _, cw := range cgWindows {
-				result = append(result, winInfo{
+				wi := winInfo{
 					Title:     cw.Title,
 					X:         int(cw.X),
 					Y:         int(cw.Y),
@@ -959,7 +962,15 @@ func registerAXListWindows(s *mcp.Server) {
 					Height:    int(cw.Height),
 					Display:   displayIndexForPoint(displays, cw.X, cw.Y),
 					OffScreen: cw.OffScreen,
-				})
+				}
+				if off, err := spacedetect.IsOffSpace(cw.WindowID); err != nil {
+					if !errors.Is(err, spacedetect.ErrSkyLightUnavailable) {
+						slog.Debug("spacedetect: lookup failed", "windowID", cw.WindowID, "err", err)
+					}
+				} else if off {
+					wi.OffSpace = true
+				}
+				result = append(result, wi)
 			}
 		}
 
