@@ -295,6 +295,7 @@ Available stages:
 
 func cliClick() *cobra.Command {
 	var role string
+	var raise bool
 	cmd := &cobra.Command{
 		Use:   "click <app> <contains>",
 		Short: "Click an element found by normalized text lookup",
@@ -305,6 +306,11 @@ func cliClick() *cobra.Command {
 				return err
 			}
 			defer app.Close()
+			if raise {
+				if err := app.Activate(); err != nil {
+					return fmt.Errorf("raise %s: %w", args[0], err)
+				}
+			}
 			result := findElements(app.Root(), searchOptions{
 				Role:     role,
 				Contains: args[1],
@@ -327,6 +333,7 @@ func cliClick() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&role, "role", "", "AX role filter")
+	cmd.Flags().BoolVar(&raise, "raise", false, "activate the target app and bring its window front before clicking")
 	return cmd
 }
 

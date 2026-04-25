@@ -467,6 +467,24 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 		if el == nil {
 			return fmt.Errorf("raise: no element in context")
 		}
+		// AXRaise is a window-level action. When the current scope is the
+		// AXApplication root (e.g. just after `app X`), activate the app
+		// and pick its first window so subsequent stages aren't fighting
+		// with whatever was previously frontmost.
+		if el.Role() == "AXApplication" && pc.app != nil {
+			if err := pc.app.Activate(); err != nil {
+				return fmt.Errorf("raise: activate app: %w", err)
+			}
+			if wins := pc.app.WindowList(); len(wins) > 0 {
+				el = wins[0]
+				pc.element = el
+				pc.elements = nil
+			}
+			fmt.Fprintf(buf, "activated app %s (pid=%d)\n", pc.app.BundleID(), pc.app.PID())
+			pc.findNote = ""
+			pc.findPick = nil
+			break
+		}
 		if err := el.Raise(); err != nil {
 			return err
 		}
