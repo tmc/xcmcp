@@ -8,9 +8,11 @@
 // deliberately out of scope: it requires a private WindowServer entitlement
 // that Apple does not grant outside its own processes.
 //
-// IsOffSpace returns ErrSkyLightUnavailable when the framework or any of the
-// three symbols cannot be resolved, so callers can degrade gracefully on
-// systems where the SPI has been renamed or removed.
+// IsOffSpace returns errors that wrap ErrSkyLightUnavailable when the
+// framework or any of the three symbols cannot be resolved. Callers should
+// branch via errors.Is(err, ErrSkyLightUnavailable) — bare == comparison
+// will silently miss every real error, since errors are joined with
+// fmt.Errorf("%w: ...", ErrSkyLightUnavailable, cause).
 //
 // This package is the smallest possible adoption of the SkyLight dlsym
 // pattern; landing it derisks the binding workflow before the larger

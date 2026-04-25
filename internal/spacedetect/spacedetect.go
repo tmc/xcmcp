@@ -12,9 +12,11 @@ import (
 	"github.com/tmc/apple/corefoundation"
 )
 
-// ErrSkyLightUnavailable is returned when SkyLight cannot be loaded or one of
-// the SLS symbols cannot be resolved on this system. Callers should treat it
-// as "feature not available, continue without off-Space metadata".
+// ErrSkyLightUnavailable is wrapped into the error returned by IsOffSpace
+// when SkyLight cannot be loaded or one of the SLS symbols cannot be
+// resolved. Callers should branch via errors.Is(err, ErrSkyLightUnavailable);
+// bare == comparison will not match because the sentinel is always wrapped
+// with the underlying cause via fmt.Errorf("%w: ...", ErrSkyLightUnavailable).
 var ErrSkyLightUnavailable = errors.New("spacedetect: SkyLight unavailable")
 
 const skyLightPath = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
@@ -74,7 +76,8 @@ func registerLib(fptr any, handle uintptr, name string) (err error) {
 // the active Space. It returns (false, nil) for windows on the active Space,
 // (true, nil) for windows on a different Space, and (false, err) when SkyLight
 // cannot be reached or the lookup yields no Space membership for the window
-// (which can happen for transient or system windows).
+// (which can happen for transient or system windows). When SkyLight is
+// unavailable the error wraps ErrSkyLightUnavailable; check it with errors.Is.
 func IsOffSpace(windowID uint32) (bool, error) {
 	if err := load(); err != nil {
 		return false, err
