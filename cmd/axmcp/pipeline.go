@@ -475,12 +475,17 @@ func execStageWriter(pc *pipeContext, parts []string, buf *strings.Builder) erro
 			if err := pc.app.Activate(); err != nil {
 				return fmt.Errorf("raise: activate app: %w", err)
 			}
-			if wins := pc.app.WindowList(); len(wins) > 0 {
-				el = wins[0]
-				pc.element = el
-				pc.elements = nil
+			wins := pc.app.WindowList()
+			if len(wins) == 0 {
+				fmt.Fprintf(buf, "activated app %s (pid=%d); no windows to bind\n", pc.app.BundleID(), pc.app.PID())
+				pc.findNote = ""
+				pc.findPick = nil
+				break
 			}
-			fmt.Fprintf(buf, "activated app %s (pid=%d)\n", pc.app.BundleID(), pc.app.PID())
+			el = wins[0]
+			pc.element = el
+			pc.elements = nil
+			fmt.Fprintf(buf, "activated app %s (pid=%d), bound first window %q\n", pc.app.BundleID(), pc.app.PID(), el.Title())
 			pc.findNote = ""
 			pc.findPick = nil
 			break
